@@ -1,0 +1,39 @@
+# youtube_analytics Community Connector Spec
+# This file defines the specification for the connector including
+# connection parameters and allowlist options.
+
+# ============================================================================
+# Connection Parameters
+# These are provided when creating the Unity Catalog connection.
+# ============================================================================
+connection:
+  parameters:
+    - name: client_id
+      type: string
+      required: true
+      description: >
+        OAuth 2.0 client ID from the Google Cloud Console.
+        Create this in APIs & Services → Credentials → OAuth 2.0 Client IDs.
+
+    - name: client_secret
+      type: string
+      required: true
+      description: >
+        OAuth 2.0 client secret from the Google Cloud Console.
+        This is provided when creating the OAuth 2.0 client ID.
+
+    - name: refresh_token
+      type: string
+      required: true
+      description: >
+        OAuth 2.0 refresh token obtained by completing the OAuth consent flow.
+        Use the Google OAuth 2.0 Playground or a custom OAuth flow to obtain this.
+        Required scope: https://www.googleapis.com/auth/youtube.force-ssl
+
+# ============================================================================
+# External Options Allowlist
+# These table-specific options must be included in the externalOptionsAllowList
+# parameter of the UC connection to allow them to be passed through.
+# Use a comma-separated string of option names.
+# ============================================================================
+external_options_allowlist: "video_id,max_results,text_format,channel_id"
