@@ -42,3 +42,4 @@ ENV/
 tmp/
 *.tmp
 
+.venv311/

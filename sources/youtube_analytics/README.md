@@ -85,7 +85,7 @@ The YouTube Analytics connector exposes a **static list** of tables:
 
 | Table      | Description                                                    | Ingestion Type | Primary Key | Incremental Cursor |
 |------------|----------------------------------------------------------------|----------------|-------------|--------------------|
-| `comments` | All comments (top-level and replies) for a specified video     | `cdc`          | `id`        | `updated_at`       |
+| `comments` | All comments (top-level and replies) for a video or entire channel | `cdc`          | `id`        | `updated_at`       |
 | `videos`   | All video metadata for a channel                               | `snapshot`     | `id`        | n/a                |
 
 ### Required and Optional Table Options
@@ -93,7 +93,8 @@ The YouTube Analytics connector exposes a **static list** of tables:
 Table-specific options are passed via the pipeline spec under `table` in `objects`:
 
 - **`comments`**:
-  - `video_id` (string, **required**): The YouTube video ID to fetch comments for.
+  - `video_id` (string, optional): The YouTube video ID to fetch comments for. If not provided, fetches comments for **all videos** in the channel.
+  - `channel_id` (string, optional): The channel ID to use when discovering videos (only used when `video_id` is not provided). Defaults to the authenticated user's channel.
   - `max_results` (integer, optional): Page size for API pagination. Range 1-100, defaults to 100.
   - `text_format` (string, optional): Format for comment text. Either `"plainText"` or `"html"`. Defaults to `"plainText"`.
 
@@ -196,6 +197,11 @@ Example `pipeline_spec` snippet:
       },
       {
         "table": {
+          "source_table": "comments"
+        }
+      },
+      {
+        "table": {
           "source_table": "videos"
         }
       }
@@ -205,14 +211,19 @@ Example `pipeline_spec` snippet:
 ```
 
 - `connection_name` must point to the UC connection configured with your OAuth credentials.
-- For `comments`: `video_id` is required and specifies which YouTube video to fetch comments from.
+- For `comments`: 
+  - If `video_id` is provided, fetches comments for that specific video.
+  - If `video_id` is **not** provided, discovers all videos in the channel and fetches comments for **all** of them (channel-wide mode).
 - For `videos`: No required options; defaults to the authenticated user's channel. Optionally provide `channel_id` to fetch videos from a different channel.
 
 ### Step 3: Run and Schedule the Pipeline
 
 Run the pipeline using your standard Lakeflow / Databricks orchestration.
 
-- For `comments`: On the first run, all comments for the video are fetched. On subsequent runs, the connector uses the stored cursor (`updated_at`) to support incremental sync patterns.
+- For `comments`: 
+  - If `video_id` is specified, fetches all comments for that video. 
+  - If `video_id` is not specified, discovers all videos in the channel and fetches comments for all of them.
+  - On subsequent runs, the connector uses the stored cursor (`updated_at`) to support incremental sync patterns.
 - For `videos`: All video metadata is fetched on every run (snapshot ingestion). The connector discovers videos via the channel's uploads playlist.
 
 #### Best Practices

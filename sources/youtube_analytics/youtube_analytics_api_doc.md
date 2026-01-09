@@ -62,7 +62,7 @@ The object list is **static** (defined by the connector), not discovered dynamic
 | `videos` | Video metadata for all videos in a channel | `GET /videos` (with discovery via `channels` + `playlistItems`) | `snapshot` |
 
 **Connector scope**:
-- `comments`: Fetches all comments (top-level + replies) for a specific video. Requires `video_id` table option.
+- `comments`: Fetches all comments (top-level + replies) for videos. If `video_id` is provided, fetches comments for that specific video. If `video_id` is **not** provided, discovers all videos in the channel (using `channel_id` or authenticated user's channel) and fetches comments for all of them.
 - `videos`: Discovers all videos for a channel via the uploads playlist, then fetches full metadata. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 
 
@@ -85,6 +85,12 @@ The object list is **static** (defined by the connector), not discovered dynamic
 - Each thread includes a `topLevelComment` (a full comment resource) and optionally a `replies` array.
 - The `replies.comments` array may not include all replies; additional replies must be fetched via `comments.list` with `parentId`.
 - The connector **flattens** the response into a single row per comment, combining thread-level fields (`videoId`, `canReply`, `totalReplyCount`, `isPublic`) with comment-level fields from `topLevelComment`.
+
+**Table options**:
+- `video_id` (optional): The YouTube video ID to fetch comments for. If provided, fetches comments for that specific video only. If **not** provided, discovers all videos in the channel and fetches comments for all of them.
+- `channel_id` (optional): The channel ID to use when discovering videos (only used when `video_id` is not provided). Defaults to the authenticated user's channel (`mine=true`).
+- `max_results` (optional): Page size for API pagination. Range 1-100, defaults to 100.
+- `text_format` (optional): Format for comment text. Either `"plainText"` or `"html"`. Defaults to `"plainText"`.
 
 **High-level schema (connector view)** — Flattened, matching Fivetran's approach:
 

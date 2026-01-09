@@ -23,7 +23,9 @@ class LakeflowConnect:
     The UC connection must provide: client_id, client_secret, refresh_token.
 
     Supported tables:
-        - comments: All comments (top-level + replies) for a video. Requires video_id.
+        - comments: All comments (top-level + replies) for videos. If video_id is
+          provided, fetches comments for that video only. Otherwise, discovers all
+          videos for the channel and fetches comments for all of them.
         - videos: All video metadata for a channel. Optionally accepts channel_id.
     """
 
@@ -294,14 +296,18 @@ class LakeflowConnect:
         Read records from a table and return raw JSON-like dictionaries.
 
         For the `comments` table:
-            - Fetches all comment threads for the specified video_id
-            - For each thread with replies, fetches all replies
-            - Combines top-level comments and replies into a single flattened output
-
-        Required table_options for `comments`:
-            - video_id: The YouTube video ID to fetch comments for.
+            - If video_id is provided, fetches comments for that specific video.
+            - If video_id is NOT provided, discovers all videos for the channel
+              (using channel_id or authenticated user's channel) and fetches
+              comments for all of them.
+            - For each video, fetches all comment threads and their replies.
+            - Combines top-level comments and replies into a single flattened output.
 
         Optional table_options for `comments`:
+            - video_id: The YouTube video ID to fetch comments for. If not
+              provided, fetches comments for all videos in the channel.
+            - channel_id: The channel ID (used when video_id is not provided).
+              Defaults to authenticated user's channel.
             - max_results: Page size for API calls (max 100, default 100).
             - text_format: 'plainText' or 'html' (default 'plainText').
 
@@ -329,13 +335,25 @@ class LakeflowConnect:
         """
         Internal implementation for reading the `comments` table.
 
-        Fetches all comments (top-level + replies) for a video.
+        If video_id is provided, fetches all comments for that specific video.
+        If video_id is NOT provided, discovers all videos for the channel
+        (using channel_id or authenticated user's channel) and fetches
+        comments for all of them.
         """
         video_id = table_options.get("video_id")
-        if not video_id:
-            raise ValueError(
-                "table_options for 'comments' must include non-empty 'video_id'"
-            )
+
+        # Determine which videos to fetch comments for
+        if video_id:
+            # Single video mode
+            video_ids = [video_id]
+        else:
+            # Channel-wide mode: discover all videos
+            channel_id = table_options.get("channel_id") or None
+            uploads_playlist_id = self._get_uploads_playlist_id(channel_id)
+            video_ids = self._enumerate_video_ids_from_playlist(uploads_playlist_id)
+
+        if not video_ids:
+            return iter([]), {}
 
         # Parse options
         try:
@@ -351,66 +369,69 @@ class LakeflowConnect:
         records: list[dict[str, Any]] = []
         max_updated_at: str | None = None
 
-        # Step 1: Fetch all comment threads for the video
-        threads = self._fetch_all_comment_threads(video_id, max_results, text_format)
+        # Fetch comments for each video
+        for vid in video_ids:
+            # Fetch all comment threads for this video
+            # (returns empty list if comments are disabled)
+            threads = self._fetch_all_comment_threads(vid, max_results, text_format)
 
-        for thread in threads:
-            thread_snippet = thread.get("snippet", {})
-            top_level_comment = thread_snippet.get("topLevelComment", {})
-            top_comment_snippet = top_level_comment.get("snippet", {})
+            for thread in threads:
+                thread_snippet = thread.get("snippet", {})
+                top_level_comment = thread_snippet.get("topLevelComment", {})
+                top_comment_snippet = top_level_comment.get("snippet", {})
 
-            # Thread-level metadata (inherited by replies too)
-            thread_video_id = thread_snippet.get("videoId", video_id)
-            can_reply = thread_snippet.get("canReply")
-            is_public = thread_snippet.get("isPublic")
-            total_reply_count = thread_snippet.get("totalReplyCount", 0)
+                # Thread-level metadata (inherited by replies too)
+                thread_video_id = thread_snippet.get("videoId", vid)
+                can_reply = thread_snippet.get("canReply")
+                is_public = thread_snippet.get("isPublic")
+                total_reply_count = thread_snippet.get("totalReplyCount", 0)
 
-            # Build top-level comment record
-            top_record = self._build_comment_record(
-                comment=top_level_comment,
-                comment_snippet=top_comment_snippet,
-                video_id=thread_video_id,
-                can_reply=can_reply,
-                is_public=is_public,
-                total_reply_count=total_reply_count,
-                parent_id=None,
-            )
-            records.append(top_record)
+                # Build top-level comment record
+                top_record = self._build_comment_record(
+                    comment=top_level_comment,
+                    comment_snippet=top_comment_snippet,
+                    video_id=thread_video_id,
+                    can_reply=can_reply,
+                    is_public=is_public,
+                    total_reply_count=total_reply_count,
+                    parent_id=None,
+                )
+                records.append(top_record)
 
-            # Track max updated_at
-            updated_at = top_record.get("updated_at")
-            if isinstance(updated_at, str):
-                if max_updated_at is None or updated_at > max_updated_at:
-                    max_updated_at = updated_at
+                # Track max updated_at
+                updated_at = top_record.get("updated_at")
+                if isinstance(updated_at, str):
+                    if max_updated_at is None or updated_at > max_updated_at:
+                        max_updated_at = updated_at
 
-            # Step 2: Fetch all replies if there are any
-            if total_reply_count and total_reply_count > 0:
-                top_comment_id = top_level_comment.get("id")
-                if top_comment_id:
-                    replies = self._fetch_all_replies(
-                        top_comment_id, max_results, text_format
-                    )
-
-                    for reply in replies:
-                        reply_snippet = reply.get("snippet", {})
-
-                        # Build reply record (inherit thread metadata)
-                        reply_record = self._build_comment_record(
-                            comment=reply,
-                            comment_snippet=reply_snippet,
-                            video_id=thread_video_id,
-                            can_reply=can_reply,
-                            is_public=is_public,
-                            total_reply_count=0,  # Replies don't have nested replies
-                            parent_id=top_comment_id,
+                # Step 2: Fetch all replies if there are any
+                if total_reply_count and total_reply_count > 0:
+                    top_comment_id = top_level_comment.get("id")
+                    if top_comment_id:
+                        replies = self._fetch_all_replies(
+                            top_comment_id, max_results, text_format
                         )
-                        records.append(reply_record)
 
-                        # Track max updated_at
-                        reply_updated_at = reply_record.get("updated_at")
-                        if isinstance(reply_updated_at, str):
-                            if max_updated_at is None or reply_updated_at > max_updated_at:
-                                max_updated_at = reply_updated_at
+                        for reply in replies:
+                            reply_snippet = reply.get("snippet", {})
+
+                            # Build reply record (inherit thread metadata)
+                            reply_record = self._build_comment_record(
+                                comment=reply,
+                                comment_snippet=reply_snippet,
+                                video_id=thread_video_id,
+                                can_reply=can_reply,
+                                is_public=is_public,
+                                total_reply_count=0,  # Replies don't have nested replies
+                                parent_id=top_comment_id,
+                            )
+                            records.append(reply_record)
+
+                            # Track max updated_at
+                            reply_updated_at = reply_record.get("updated_at")
+                            if isinstance(reply_updated_at, str):
+                                if max_updated_at is None or reply_updated_at > max_updated_at:
+                                    max_updated_at = reply_updated_at
 
         # Build offset
         next_cursor = None
