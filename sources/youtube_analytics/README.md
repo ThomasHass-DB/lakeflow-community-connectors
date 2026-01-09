@@ -315,48 +315,48 @@ In your pipeline code, configure a `pipeline_spec` that references:
 - A **Unity Catalog connection** configured with OAuth credentials.
 - One or more **tables** to ingest, each with required `table_options`.
 
-Example `pipeline_spec` snippet:
+Example `pipeline_spec`:
 
-```json
-{
-  "pipeline_spec": {
-    "connection_name": "youtube_connection",
-    "object": [
-      {
-        "table": {
-          "source_table": "captions"
-        }
-      },
-      {
-        "table": {
-          "source_table": "channels"
-        }
-      },
-      {
-        "table": {
-          "source_table": "comments",
-          "video_id": "dQw4w9WgXcQ"
-        }
-      },
-      {
-        "table": {
-          "source_table": "comments"
-        }
-      },
-      {
-        "table": {
-          "source_table": "playlists"
-        }
-      },
-      {
-        "table": {
-          "source_table": "videos"
-        }
-      }
+```python
+pipeline_spec = {
+    "connection_name": "youtube_connection_hackathon_datamyselfai",
+    "objects": [
+        {
+            "table": {
+                "source_table": "videos",
+            }
+        },
+        {
+            "table": {
+                "source_table": "comments",
+                # "table_configuration": {
+                #     "video_id": "gFAnlTM-3Zo"
+                # }
+            }
+        },
+        {
+            "table": {
+                "source_table": "channels",
+            }
+        },
+        {
+            "table": {
+                "source_table": "captions",
+                "table_configuration": {
+                    "video_id": "<video_id>"
+                }
+            }
+        },
+        {
+            "table": {
+                "source_table": "playlists",
+            }
+        },
     ]
-  }
 }
 ```
+
+> ⚠️ **Important**: It is strongly recommended to specify a `video_id` for the `captions` table. Fetching captions for all videos in a channel will quickly exhaust your API quota due to the high cost of caption operations (~50 units per `captions.list` + ~200 units per `captions.download`).
 
 - `connection_name` must point to the UC connection configured with your OAuth credentials.
 - For `captions`: Downloads and parses caption files for owned videos. Creates one row per caption cue.
@@ -462,8 +462,6 @@ WHERE v.title LIKE '%'
 
 ## API Quota Information
 
-> **Important**: The YouTube Data API quota is tied to **your Google Cloud project**, not to this connector or any third-party tool. Whether you use this connector, Fivetran, or any other solution, API calls consume quota from your own project.
-
 ### Default Quota
 - **10,000 units per day** per Google Cloud project
 - Resets at midnight Pacific Time
@@ -478,13 +476,6 @@ WHERE v.title LIKE '%'
 | `channels.list` | ~1 unit | Per request |
 | `captions.list` | ~50 units | Per video |
 | `captions.download` | ~200 units | **Most expensive** - per track |
-
-### Tips to Reduce Quota Usage
-
-1. **Use specific `video_id`** instead of fetching comments/captions for entire channel
-2. **Skip `captions` table** if you don't need transcript data (highest quota cost)
-3. **Reduce sync frequency** - daily syncs instead of hourly
-4. **Use incremental sync** for `comments` table (uses cursor to minimize re-fetching)
 
 ### Increasing Your Quota
 
