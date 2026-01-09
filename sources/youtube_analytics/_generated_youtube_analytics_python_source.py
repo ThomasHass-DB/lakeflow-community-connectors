@@ -210,18 +210,20 @@ def register_lakeflow_source(spark):
 
     class LakeflowConnect:
         """
-        YouTube Data API v3 connector for fetching comments, videos, and channels.
+        YouTube Data API v3 connector for fetching captions, channels, comments, and videos.
 
         This connector uses OAuth 2.0 with refresh token authentication.
         The UC connection must provide: client_id, client_secret, refresh_token.
 
         Supported tables:
+            - captions: Caption track content (one row per cue). Downloads and parses
+              caption files. NOTE: Only works for videos owned by authenticated user.
+            - channels: Channel metadata. Optionally accepts channel_id (defaults to
+              authenticated user's channel).
             - comments: All comments (top-level + replies) for videos. If video_id is
               provided, fetches comments for that video only. Otherwise, discovers all
               videos for the channel and fetches comments for all of them.
             - videos: All video metadata for a channel. Optionally accepts channel_id.
-            - channels: Channel metadata. Optionally accepts channel_id (defaults to
-              authenticated user's channel).
         """
 
         # Google OAuth token endpoint
@@ -302,7 +304,38 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
             """
-            return ["channels", "comments", "videos"]
+            return ["captions", "channels", "comments", "videos"]
+
+        def _get_captions_schema(self) -> StructType:
+            """Return the captions table schema (one row per caption cue)."""
+            return StructType(
+                [
+                    # Composite primary key
+                    StructField("id", StringType(), False),  # Caption track ID
+                    StructField("start_ms", LongType(), False),  # Cue start time in ms
+                    # Video reference
+                    StructField("video_id", StringType(), False),
+                    # Parsed content
+                    StructField("end_ms", LongType(), True),
+                    StructField("duration_ms", LongType(), True),
+                    StructField("text", StringType(), True),
+                    # Track metadata
+                    StructField("language", StringType(), True),
+                    StructField("name", StringType(), True),
+                    StructField("track_kind", StringType(), True),
+                    StructField("audio_track_type", StringType(), True),
+                    StructField("is_cc", BooleanType(), True),
+                    StructField("is_large", BooleanType(), True),
+                    StructField("is_easy_reader", BooleanType(), True),
+                    StructField("is_draft", BooleanType(), True),
+                    StructField("is_auto_synced", BooleanType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("failure_reason", StringType(), True),
+                    StructField("last_updated", TimestampType(), True),
+                    StructField("etag", StringType(), True),
+                    StructField("kind", StringType(), True),
+                ]
+            )
 
         def _get_comments_schema(self) -> StructType:
             """Return the flattened comments table schema."""
@@ -485,6 +518,8 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "captions":
+                return self._get_captions_schema()
             if table_name == "channels":
                 return self._get_channels_schema()
             if table_name == "comments":
@@ -516,6 +551,11 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "captions":
+                return {
+                    "primary_keys": ["id", "start_ms"],
+                    "ingestion_type": "snapshot",
+                }
             if table_name == "channels":
                 return {
                     "primary_keys": ["id"],
@@ -541,6 +581,24 @@ def register_lakeflow_source(spark):
             """
             Read records from a table and return raw JSON-like dictionaries.
 
+            For the `captions` table:
+                - Downloads and parses caption content for videos.
+                - Creates one row per caption cue (subtitle line).
+                - NOTE: Caption download only works for videos owned by the
+                  authenticated user.
+
+            Optional table_options for `captions`:
+                - video_id: The video ID to fetch captions for. If not provided,
+                  discovers all videos for the channel.
+                - channel_id: The channel ID (used when video_id is not provided).
+
+            For the `channels` table:
+                - Fetches channel metadata
+
+            Optional table_options for `channels`:
+                - channel_id: The channel ID to fetch. Defaults to authenticated
+                  user's channel if not provided.
+
             For the `comments` table:
                 - If video_id is provided, fetches comments for that specific video.
                 - If video_id is NOT provided, discovers all videos for the channel
@@ -564,17 +622,12 @@ def register_lakeflow_source(spark):
             Optional table_options for `videos`:
                 - channel_id: The channel ID to fetch videos from. Defaults to
                   authenticated user's channel if not provided.
-
-            For the `channels` table:
-                - Fetches channel metadata
-
-            Optional table_options for `channels`:
-                - channel_id: The channel ID to fetch. Defaults to authenticated
-                  user's channel if not provided.
             """
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "captions":
+                return self._read_captions(start_offset, table_options)
             if table_name == "channels":
                 return self._read_channels(start_offset, table_options)
             if table_name == "comments":
@@ -1132,6 +1185,211 @@ def register_lakeflow_source(spark):
                 "live_streaming_details_active_chat_id": live_streaming.get(
                     "activeLiveChatId"
                 ),
+            }
+
+        # -------------------------------------------------------------------------
+        # Captions table implementation
+        # -------------------------------------------------------------------------
+
+        def _read_captions(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the `captions` table.
+
+            Downloads and parses caption content for videos owned by the
+            authenticated user. Creates one row per caption cue.
+
+            NOTE: Caption download only works for videos you own.
+            """
+            import re
+
+            video_id = table_options.get("video_id")
+
+            # Determine which videos to fetch captions for
+            if video_id:
+                video_ids = [video_id]
+            else:
+                # Discover all videos for the channel
+                channel_id = table_options.get("channel_id") or None
+                uploads_playlist_id = self._get_uploads_playlist_id(channel_id)
+                if not uploads_playlist_id:
+                    return iter([]), {}
+                video_ids = list(self._enumerate_video_ids_from_playlist(uploads_playlist_id))
+                if not video_ids:
+                    return iter([]), {}
+
+            def generate_caption_records():
+                for vid_id in video_ids:
+                    # Fetch caption tracks for this video
+                    caption_tracks = self._fetch_caption_tracks(vid_id)
+
+                    for track in caption_tracks:
+                        track_id = track.get("id")
+                        snippet = track.get("snippet", {})
+                        status = snippet.get("status", "")
+
+                        # Skip tracks that aren't serving
+                        if status != "serving":
+                            continue
+
+                        # Download caption content in SRT format
+                        srt_content = self._download_caption(track_id)
+                        if not srt_content:
+                            continue
+
+                        # Parse SRT into cues
+                        cues = self._parse_srt(srt_content, re)
+
+                        # Build records for each cue
+                        for cue in cues:
+                            yield self._build_caption_record(track, vid_id, cue)
+
+            return generate_caption_records(), {}
+
+        def _fetch_caption_tracks(self, video_id: str) -> list[dict]:
+            """
+            Fetch caption track metadata for a video.
+
+            Returns list of caption track resources.
+            """
+            url = f"{self.BASE_URL}/captions"
+            params = {
+                "part": "snippet",
+                "videoId": video_id,
+            }
+
+            response = self._session.get(
+                url, headers=self._get_headers(), params=params, timeout=30
+            )
+
+            if response.status_code == 403:
+                # Forbidden - likely not owner of video or captions disabled
+                return []
+            if response.status_code == 404:
+                # Video not found
+                return []
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"captions.list failed: {response.status_code} {response.text}"
+                )
+
+            data = response.json()
+            return data.get("items", [])
+
+        def _download_caption(self, caption_id: str) -> str | None:
+            """
+            Download caption content in SRT format.
+
+            Returns the SRT content as string, or None if download fails.
+            """
+            url = f"{self.BASE_URL}/captions/{caption_id}"
+            params = {"tfmt": "srt"}
+
+            response = self._session.get(
+                url, headers=self._get_headers(), params=params, timeout=60
+            )
+
+            if response.status_code == 403:
+                # Forbidden - not owner of video
+                return None
+            if response.status_code == 404:
+                # Caption track not found
+                return None
+            if response.status_code != 200:
+                # Log but don't fail - some tracks may be unavailable
+                return None
+
+            return response.text
+
+        def _parse_srt(self, srt_content: str, re_module: Any) -> list[dict]:
+            """
+            Parse SRT subtitle content into list of cue dictionaries.
+
+            Each cue contains: start_ms, end_ms, duration_ms, text
+            """
+            cues = []
+            # Split by double newline (cue separator)
+            # Handle both Unix and Windows line endings
+            normalized = srt_content.replace("\r\n", "\n")
+            blocks = re_module.split(r"\n\n+", normalized.strip())
+
+            for block in blocks:
+                lines = block.strip().split("\n")
+                if len(lines) < 2:
+                    continue
+
+                # First line is cue number (skip)
+                # Second line is timestamp: HH:MM:SS,mmm --> HH:MM:SS,mmm
+                timestamp_match = re_module.match(
+                    r"(\d{1,2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*"
+                    r"(\d{1,2}):(\d{2}):(\d{2}),(\d{3})",
+                    lines[1],
+                )
+                if not timestamp_match:
+                    continue
+
+                # Convert to milliseconds
+                start_ms = (
+                    int(timestamp_match.group(1)) * 3600000
+                    + int(timestamp_match.group(2)) * 60000
+                    + int(timestamp_match.group(3)) * 1000
+                    + int(timestamp_match.group(4))
+                )
+                end_ms = (
+                    int(timestamp_match.group(5)) * 3600000
+                    + int(timestamp_match.group(6)) * 60000
+                    + int(timestamp_match.group(7)) * 1000
+                    + int(timestamp_match.group(8))
+                )
+
+                # Text is everything after timestamp line
+                text = "\n".join(lines[2:]) if len(lines) > 2 else ""
+
+                cues.append(
+                    {
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "duration_ms": end_ms - start_ms,
+                        "text": text,
+                    }
+                )
+
+            return cues
+
+        def _build_caption_record(
+            self, track: dict, video_id: str, cue: dict
+        ) -> dict[str, Any]:
+            """
+            Build a flattened caption record from track metadata and parsed cue.
+            """
+            snippet = track.get("snippet", {})
+
+            return {
+                # Composite primary key
+                "id": track.get("id"),
+                "start_ms": cue.get("start_ms"),
+                # Video reference
+                "video_id": video_id,
+                # Parsed content
+                "end_ms": cue.get("end_ms"),
+                "duration_ms": cue.get("duration_ms"),
+                "text": cue.get("text"),
+                # Track metadata
+                "language": snippet.get("language"),
+                "name": snippet.get("name"),
+                "track_kind": snippet.get("trackKind"),
+                "audio_track_type": snippet.get("audioTrackType"),
+                "is_cc": snippet.get("isCC"),
+                "is_large": snippet.get("isLarge"),
+                "is_easy_reader": snippet.get("isEasyReader"),
+                "is_draft": snippet.get("isDraft"),
+                "is_auto_synced": snippet.get("isAutoSynced"),
+                "status": snippet.get("status"),
+                "failure_reason": snippet.get("failureReason"),
+                "last_updated": snippet.get("lastUpdated"),
+                "etag": track.get("etag"),
+                "kind": track.get("kind"),
             }
 
         # -------------------------------------------------------------------------

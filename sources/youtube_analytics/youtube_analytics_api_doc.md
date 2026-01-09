@@ -58,14 +58,16 @@ The object list is **static** (defined by the connector), not discovered dynamic
 
 | Object Name | Description | Primary Endpoint | Ingestion Type |
 |------------|-------------|------------------|----------------|
+| `captions` | Caption track content with metadata | `GET /captions` + `GET /captions/{id}` (download) | `snapshot` |
+| `channels` | Channel metadata | `GET /channels` | `snapshot` |
 | `comments` | Top-level comments and their replies for a video | `GET /commentThreads` | `cdc` (upserts based on `updatedAt`) |
 | `videos` | Video metadata for all videos in a channel | `GET /videos` (with discovery via `channels` + `playlistItems`) | `snapshot` |
-| `channels` | Channel metadata | `GET /channels` | `snapshot` |
 
 **Connector scope**:
+- `captions`: Fetches caption track metadata and downloads the full caption content for videos. Creates one row per caption cue (subtitle line). **Note**: Caption download only works for videos owned by the authenticated user. Optionally accepts `video_id` (defaults to all videos in channel).
+- `channels`: Fetches channel metadata for one or more channels. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 - `comments`: Fetches all comments (top-level + replies) for videos. If `video_id` is provided, fetches comments for that specific video. If `video_id` is **not** provided, discovers all videos in the channel (using `channel_id` or authenticated user's channel) and fetches comments for all of them.
 - `videos`: Discovers all videos for a channel via the uploads playlist, then fetches full metadata. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
-- `channels`: Fetches channel metadata for one or more channels. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 
 
 ## **Object Schema**
@@ -353,6 +355,162 @@ curl -X GET \
 ```
 
 
+### `captions` object
+
+**Source endpoints**:
+- `GET /captions` — retrieves caption track metadata for a video (list).
+- `GET /captions/{id}` — downloads the actual caption file content (download).
+
+**Key behavior**:
+- The connector first fetches caption track metadata using `captions.list` for a video.
+- For each caption track, it downloads the full caption content using `captions.download` in SRT format.
+- The SRT file is parsed to extract individual caption cues (start time, duration, text).
+- **Important**: Caption download only works for videos owned by the authenticated user. Attempting to download captions for other users' videos will fail with a 403 error.
+- Each caption cue becomes a separate row, combining track metadata with the parsed content.
+
+**Table options**:
+- `video_id` (optional): The video ID to fetch captions for. If not provided, discovers all videos in the channel and fetches captions for all of them.
+- `channel_id` (optional): The channel ID (used when `video_id` is not provided). Defaults to the authenticated user's channel.
+
+**High-level schema (connector view)** — One row per caption cue:
+
+| Column Name | Type | Source | Description |
+|------------|------|--------|-------------|
+| `id` | string | captions.list | **Composite PK part 1.** The unique caption track ID. |
+| `start_ms` | long | parsed content | **Composite PK part 2.** Start time of cue in milliseconds. |
+| `video_id` | string | captions.list | The video this caption track belongs to. |
+| `end_ms` | long | parsed content | End time of cue in milliseconds. |
+| `duration_ms` | long | parsed content | Duration of cue in milliseconds (`end_ms - start_ms`). |
+| `text` | string | parsed content | The caption text for this cue. |
+| `language` | string | captions.list | BCP-47 language code of the caption track. |
+| `name` | string | captions.list | Display name of the caption track. |
+| `track_kind` | string | captions.list | Type: `ASR` (auto-generated), `forced`, or `standard`. |
+| `audio_track_type` | string | captions.list | Audio type: `commentary`, `descriptive`, `primary`, `unknown`. |
+| `is_cc` | boolean | captions.list | Whether track is closed captions for deaf/hard of hearing. |
+| `is_large` | boolean | captions.list | Whether track uses large text for vision impaired. |
+| `is_easy_reader` | boolean | captions.list | Whether track is third-grade level for language learners. |
+| `is_draft` | boolean | captions.list | Whether track is a draft (not publicly visible). |
+| `is_auto_synced` | boolean | captions.list | Whether YouTube auto-synced timing to audio. |
+| `status` | string | captions.list | Track status: `serving`, `syncing`, `failed`. |
+| `failure_reason` | string | captions.list | Why processing failed (if `status=failed`). |
+| `last_updated` | timestamp | captions.list | When the caption track was last updated. |
+| `etag` | string | captions.list | ETag of the caption track resource. |
+| `kind` | string | captions.list | Resource kind (`youtube#caption`). |
+
+**Example list request**:
+
+```bash
+curl -X GET \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  "https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=<VIDEO_ID>"
+```
+
+**Example list response**:
+
+```json
+{
+  "kind": "youtube#captionListResponse",
+  "etag": "abc123...",
+  "items": [
+    {
+      "kind": "youtube#caption",
+      "etag": "def456...",
+      "id": "AUieDaZ...",
+      "snippet": {
+        "videoId": "dQw4w9WgXcQ",
+        "lastUpdated": "2024-01-15T10:30:00Z",
+        "trackKind": "standard",
+        "language": "en",
+        "name": "English",
+        "audioTrackType": "primary",
+        "isCC": false,
+        "isLarge": false,
+        "isEasyReader": false,
+        "isDraft": false,
+        "isAutoSynced": false,
+        "status": "serving"
+      }
+    }
+  ]
+}
+```
+
+**Example download request** (returns SRT format):
+
+```bash
+curl -X GET \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  "https://www.googleapis.com/youtube/v3/captions/<CAPTION_ID>?tfmt=srt"
+```
+
+**Example SRT response**:
+
+```
+1
+00:00:00,000 --> 00:00:02,500
+Never gonna give you up
+
+2
+00:00:02,500 --> 00:00:05,000
+Never gonna let you down
+
+3
+00:00:05,000 --> 00:00:08,500
+Never gonna run around and desert you
+```
+
+**Example flattened connector records** (one per cue):
+
+```json
+[
+  {
+    "id": "AUieDaZ...",
+    "start_ms": 0,
+    "video_id": "dQw4w9WgXcQ",
+    "end_ms": 2500,
+    "duration_ms": 2500,
+    "text": "Never gonna give you up",
+    "language": "en",
+    "name": "English",
+    "track_kind": "standard",
+    "audio_track_type": "primary",
+    "is_cc": false,
+    "is_large": false,
+    "is_easy_reader": false,
+    "is_draft": false,
+    "is_auto_synced": false,
+    "status": "serving",
+    "failure_reason": null,
+    "last_updated": "2024-01-15T10:30:00.000Z",
+    "etag": "def456...",
+    "kind": "youtube#caption"
+  },
+  {
+    "id": "AUieDaZ...",
+    "start_ms": 2500,
+    "video_id": "dQw4w9WgXcQ",
+    "end_ms": 5000,
+    "duration_ms": 2500,
+    "text": "Never gonna let you down",
+    "language": "en",
+    "name": "English",
+    "track_kind": "standard",
+    "audio_track_type": "primary",
+    "is_cc": false,
+    "is_large": false,
+    "is_easy_reader": false,
+    "is_draft": false,
+    "is_auto_synced": false,
+    "status": "serving",
+    "failure_reason": null,
+    "last_updated": "2024-01-15T10:30:00.000Z",
+    "etag": "def456...",
+    "kind": "youtube#caption"
+  }
+]
+```
+
+
 ### `channels` object
 
 **Source endpoint**:
@@ -513,9 +671,10 @@ There is no dedicated metadata endpoint to get primary keys. Primary keys are de
 
 | Object | Primary Key | Type | Source |
 |--------|-------------|------|--------|
+| `captions` | `id`, `start_ms` | string, long | Composite: caption track ID + cue start time |
+| `channels` | `id` | string | `id` from the `channels.list` response |
 | `comments` | `id` | string | `topLevelComment.id` from the `commentThreads` response |
 | `videos` | `id` | string | `id` from the `videos.list` response |
-| `channels` | `id` | string | `id` from the `channels.list` response |
 
 The connector uses these as immutable primary keys for upserts/snapshots.
 
@@ -529,9 +688,20 @@ Supported ingestion types (framework-level definitions):
 
 | Object | Ingestion Type | Rationale |
 |--------|----------------|-----------|
+| `captions` | `snapshot` | Caption content can be updated. The connector re-syncs all caption content on each run. |
+| `channels` | `snapshot` | Channel metadata (title, description, stats) can change at any time. The connector re-syncs channel metadata on each run. |
 | `comments` | `cdc` | Comments have a stable primary key `id` and an `updatedAt` field that can be used as a cursor for incremental syncs. Comments can be edited by their authors, so updates are modeled as upserts. |
 | `videos` | `snapshot` | Videos do not have a reliable `updatedAt` cursor. Video metadata (title, description, stats) can change at any time. The connector re-syncs all video metadata on each run. |
-| `channels` | `snapshot` | Channel metadata (title, description, stats) can change at any time. The connector re-syncs channel metadata on each run. |
+
+**For `captions`**:
+- **Primary key**: `id`, `start_ms` (composite)
+- **Cursor field**: None (snapshot)
+- **Deletes**: Caption tracks that are deleted will not appear on subsequent syncs.
+
+**For `channels`**:
+- **Primary key**: `id`
+- **Cursor field**: None (snapshot)
+- **Deletes**: YouTube does not expose deleted channels via this API.
 
 **For `comments`**:
 - **Primary key**: `id`
@@ -544,13 +714,117 @@ Supported ingestion types (framework-level definitions):
 - **Cursor field**: None (snapshot)
 - **Deletes**: YouTube does not expose deleted videos via this API; videos that disappear from the uploads playlist will not be returned on subsequent syncs.
 
-**For `channels`**:
-- **Primary key**: `id`
-- **Cursor field**: None (snapshot)
-- **Deletes**: YouTube does not expose deleted channels via this API.
-
 
 ## **Read API for Data Retrieval**
+
+### Read endpoints for `captions`
+
+The `captions` table requires a 2-step process: list metadata, then download content.
+
+#### Step 1: List caption tracks
+
+- **HTTP method**: `GET`
+- **Endpoint**: `/captions`
+- **Base URL**: `https://www.googleapis.com/youtube/v3`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `part` | string | yes | Use `snippet` to get metadata. |
+| `videoId` | string | yes | The video ID to list captions for. |
+
+**Response**: List of caption track resources with metadata.
+
+#### Step 2: Download caption content
+
+- **HTTP method**: `GET`
+- **Endpoint**: `/captions/{id}`
+- **Base URL**: `https://www.googleapis.com/youtube/v3`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | The caption track ID (in URL path). |
+| `tfmt` | string | no | Format: `sbv`, `srt`, `vtt`. Default varies. Use `srt` for parsing. |
+| `tlang` | string | no | Target language for translation (optional). |
+
+**Response**: Raw caption file content in the requested format.
+
+**Important restrictions**:
+- You can only download captions for videos **you own** (authenticated user must be video owner).
+- Attempting to download captions for other users' videos returns 403 Forbidden.
+
+**SRT format parsing**:
+
+The connector requests `tfmt=srt` format and parses it using this structure:
+
+```
+{cue_number}
+{start_time} --> {end_time}
+{text}
+
+```
+
+Where:
+- `start_time` / `end_time` format: `HH:MM:SS,mmm` (hours:minutes:seconds,milliseconds)
+- `text` can span multiple lines until a blank line
+
+**Example Python implementation**:
+
+```python
+import re
+
+def parse_srt(srt_content: str) -> list[dict]:
+    """Parse SRT content into list of cue dictionaries."""
+    cues = []
+    # Split by double newline (cue separator)
+    blocks = re.split(r'\n\n+', srt_content.strip())
+    
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) < 2:
+            continue
+        
+        # Skip cue number (first line)
+        # Parse timestamp line (second line)
+        timestamp_match = re.match(
+            r'(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})',
+            lines[1]
+        )
+        if not timestamp_match:
+            continue
+        
+        # Convert to milliseconds
+        start_ms = (
+            int(timestamp_match.group(1)) * 3600000 +
+            int(timestamp_match.group(2)) * 60000 +
+            int(timestamp_match.group(3)) * 1000 +
+            int(timestamp_match.group(4))
+        )
+        end_ms = (
+            int(timestamp_match.group(5)) * 3600000 +
+            int(timestamp_match.group(6)) * 60000 +
+            int(timestamp_match.group(7)) * 1000 +
+            int(timestamp_match.group(8))
+        )
+        
+        # Text is everything after timestamp line
+        text = '\n'.join(lines[2:])
+        
+        cues.append({
+            'start_ms': start_ms,
+            'end_ms': end_ms,
+            'duration_ms': end_ms - start_ms,
+            'text': text
+        })
+    
+    return cues
+```
+
+**Quota costs**:
+- `captions.list`: ~50 units per request
+- `captions.download`: ~200 units per request
+
+**Note**: Caption operations have higher quota costs than other endpoints. Monitor usage carefully.
+
 
 ### Primary read endpoint for `comments`
 
@@ -852,6 +1126,9 @@ def fetch_channel_metadata(access_token, channel_id=None):
 
 | Source Type | URL | Accessed (UTC) | Confidence | What it confirmed |
 |------------|-----|----------------|------------|-------------------|
+| Official Docs | https://developers.google.com/youtube/v3/docs/captions | 2026-01-09 | High | `caption` resource structure, properties, methods (list, download). |
+| Official Docs | https://developers.google.com/youtube/v3/docs/captions/list | 2026-01-09 | High | `captions.list` endpoint parameters, returns track metadata. |
+| Official Docs | https://developers.google.com/youtube/v3/docs/captions/download | 2026-01-09 | High | `captions.download` endpoint, format options (srt, vtt, sbv), owner-only restriction. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/commentThreads | 2026-01-08 | High | `commentThread` resource structure, properties, and methods. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/commentThreads/list | 2026-01-08 | High | `commentThreads.list` endpoint parameters, pagination, errors. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/comments | 2026-01-08 | High | `comment` resource structure and properties. |
@@ -871,12 +1148,15 @@ def fetch_channel_metadata(access_token, channel_id=None):
 
 - **Official YouTube Data API v3 documentation** (highest confidence)
   - `https://developers.google.com/youtube/v3/docs`
+  - `https://developers.google.com/youtube/v3/docs/captions`
+  - `https://developers.google.com/youtube/v3/docs/captions/list`
+  - `https://developers.google.com/youtube/v3/docs/captions/download`
+  - `https://developers.google.com/youtube/v3/docs/channels`
+  - `https://developers.google.com/youtube/v3/docs/channels/list`
   - `https://developers.google.com/youtube/v3/docs/commentThreads`
   - `https://developers.google.com/youtube/v3/docs/commentThreads/list`
   - `https://developers.google.com/youtube/v3/docs/comments`
   - `https://developers.google.com/youtube/v3/docs/comments/list`
-  - `https://developers.google.com/youtube/v3/docs/channels`
-  - `https://developers.google.com/youtube/v3/docs/channels/list`
 - **Google OAuth 2.0 documentation** (highest confidence)
   - `https://developers.google.com/identity/protocols/oauth2/web-server`
 - **Fivetran YouTube Analytics connector documentation** (high confidence)

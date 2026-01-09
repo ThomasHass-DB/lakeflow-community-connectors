@@ -1,13 +1,13 @@
 # Lakeflow YouTube Analytics Community Connector
 
-This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (channels, comments, and videos) via the YouTube Data API v3 into Databricks.
+This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (captions, channels, comments, and videos) via the YouTube Data API v3 into Databricks.
 
 ## Prerequisites
 
 - **Google Cloud Project**: A Google Cloud project with the YouTube Data API v3 enabled.
 - **OAuth 2.0 Credentials**: OAuth 2.0 client credentials (client ID and client secret) created in the Google Cloud Console.
 - **Refresh Token**: A valid OAuth 2.0 refresh token obtained by completing the OAuth consent flow with the required scopes.
-- **Required OAuth Scope**: `https://www.googleapis.com/auth/youtube.force-ssl` (allows read access to YouTube data).
+- **Required OAuth Scope**: `https://www.googleapis.com/auth/youtube.force-ssl` (allows read access to YouTube data, including caption download for owned videos).
 - **Network access**: The environment running the connector must be able to reach `https://www.googleapis.com` and `https://oauth2.googleapis.com`.
 - **Lakeflow / Databricks environment**: A workspace where you can register a Lakeflow community connector and run ingestion pipelines.
 
@@ -78,21 +78,29 @@ The connection can also be created using the standard Unity Catalog API.
 
 The YouTube Analytics connector exposes a **static list** of tables:
 
+- `captions`
 - `channels`
 - `comments`
 - `videos`
 
 ### Object Summary, Primary Keys, and Ingestion Mode
 
-| Table      | Description                                                    | Ingestion Type | Primary Key | Incremental Cursor |
-|------------|----------------------------------------------------------------|----------------|-------------|--------------------|
-| `channels` | Channel metadata                                               | `snapshot`     | `id`        | n/a                |
-| `comments` | All comments (top-level and replies) for a video or entire channel | `cdc`          | `id`        | `updated_at`       |
-| `videos`   | All video metadata for a channel                               | `snapshot`     | `id`        | n/a                |
+| Table      | Description                                                    | Ingestion Type | Primary Key        | Incremental Cursor |
+|------------|----------------------------------------------------------------|----------------|--------------------|-------------------|
+| `captions` | Caption track content (one row per subtitle cue)               | `snapshot`     | `id`, `start_ms`   | n/a               |
+| `channels` | Channel metadata                                               | `snapshot`     | `id`               | n/a               |
+| `comments` | All comments (top-level and replies) for a video or entire channel | `cdc`      | `id`               | `updated_at`      |
+| `videos`   | All video metadata for a channel                               | `snapshot`     | `id`               | n/a               |
+
+> **Note**: The `captions` table downloads and parses caption files. This only works for videos **owned by the authenticated user**. Attempting to fetch captions for other users' videos will skip those videos.
 
 ### Required and Optional Table Options
 
 Table-specific options are passed via the pipeline spec under `table` in `objects`:
+
+- **`captions`**:
+  - `video_id` (string, optional): The video ID to fetch captions for. If not provided, discovers all videos in the channel and fetches captions for all owned videos.
+  - `channel_id` (string, optional): The channel ID to use when discovering videos. Defaults to the authenticated user's channel.
 
 - **`channels`**:
   - `channel_id` (string, optional): The channel ID to fetch. If not provided, defaults to the authenticated user's channel.
@@ -107,6 +115,35 @@ Table-specific options are passed via the pipeline spec under `table` in `object
   - `channel_id` (string, optional): The channel ID to fetch videos from. If not provided, defaults to the authenticated user's channel.
 
 ### Schema Details
+
+### `captions` Schema Details
+
+The `captions` table contains one row per caption cue (subtitle line), combining track metadata with parsed content:
+
+| Field                | Type      | Source         | Description                                           |
+|----------------------|-----------|----------------|-------------------------------------------------------|
+| `id`                 | string    | captions.list  | Caption track ID (composite PK part 1)                |
+| `start_ms`           | long      | parsed SRT     | Start time in milliseconds (composite PK part 2)      |
+| `video_id`           | string    | captions.list  | The video this caption track belongs to               |
+| `end_ms`             | long      | parsed SRT     | End time in milliseconds                              |
+| `duration_ms`        | long      | parsed SRT     | Duration of the cue in milliseconds                   |
+| `text`               | string    | parsed SRT     | Caption text for this cue                             |
+| `language`           | string    | captions.list  | BCP-47 language code (e.g., `en`, `es`)               |
+| `name`               | string    | captions.list  | Display name of the caption track                     |
+| `track_kind`         | string    | captions.list  | `ASR` (auto-generated), `forced`, or `standard`       |
+| `audio_track_type`   | string    | captions.list  | `commentary`, `descriptive`, `primary`, `unknown`     |
+| `is_cc`              | boolean   | captions.list  | Whether track is closed captions (for deaf/HOH)       |
+| `is_large`           | boolean   | captions.list  | Whether track uses large text (vision impaired)       |
+| `is_easy_reader`     | boolean   | captions.list  | Whether track is third-grade level                    |
+| `is_draft`           | boolean   | captions.list  | Whether track is a draft (not publicly visible)       |
+| `is_auto_synced`     | boolean   | captions.list  | Whether YouTube auto-synced timing                    |
+| `status`             | string    | captions.list  | `serving`, `syncing`, or `failed`                     |
+| `failure_reason`     | string    | captions.list  | Reason if status is `failed`                          |
+| `last_updated`       | timestamp | captions.list  | When the caption track was last updated               |
+| `etag`               | string    | captions.list  | ETag for caching                                      |
+| `kind`               | string    | captions.list  | Resource kind (`youtube#caption`)                     |
+
+### `comments` Schema Details
 
 The `comments` table contains a flattened schema combining fields from both `commentThread` and `comment` resources:
 
@@ -229,6 +266,11 @@ Example `pipeline_spec` snippet:
     "object": [
       {
         "table": {
+          "source_table": "captions"
+        }
+      },
+      {
+        "table": {
           "source_table": "channels"
         }
       },
@@ -254,6 +296,10 @@ Example `pipeline_spec` snippet:
 ```
 
 - `connection_name` must point to the UC connection configured with your OAuth credentials.
+- For `captions`: Downloads and parses caption files for owned videos. Creates one row per caption cue.
+  - If `video_id` is provided, fetches captions for that specific video.
+  - If `video_id` is **not** provided, discovers all videos in the channel and fetches captions for all of them.
+  - **Important**: Caption download only works for videos you own.
 - For `channels`: No required options; defaults to the authenticated user's channel. Optionally provide `channel_id` to fetch a different channel.
 - For `comments`: 
   - If `video_id` is provided, fetches comments for that specific video.
@@ -264,6 +310,9 @@ Example `pipeline_spec` snippet:
 
 Run the pipeline using your standard Lakeflow / Databricks orchestration.
 
+- For `captions`: Caption content is fetched and parsed on every run (snapshot ingestion).
+  - Creates one row per caption cue with timing information and text.
+  - Only works for videos owned by the authenticated user.
 - For `channels`: Channel metadata is fetched on every run (snapshot ingestion).
 - For `comments`: 
   - If `video_id` is specified, fetches all comments for that video. 
@@ -288,6 +337,9 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
   
 - **`403 Forbidden` - commentsDisabled**:
   - The video has comments disabled. The connector returns an empty result in this case.
+
+- **`403 Forbidden` - captions not accessible**:
+  - Caption download only works for videos you own. The connector silently skips videos where captions cannot be downloaded.
   
 - **`403 Forbidden` - Access blocked**:
   - Your Google Cloud app may not be verified. Add your account as a test user in the OAuth consent screen.
@@ -305,11 +357,12 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
 - Connector API documentation: `sources/youtube_analytics/youtube_analytics_api_doc.md`
 - Official YouTube Data API v3 documentation:
   - https://developers.google.com/youtube/v3/docs
+  - https://developers.google.com/youtube/v3/docs/captions
+  - https://developers.google.com/youtube/v3/docs/channels
   - https://developers.google.com/youtube/v3/docs/commentThreads
   - https://developers.google.com/youtube/v3/docs/comments
-  - https://developers.google.com/youtube/v3/docs/videos
-  - https://developers.google.com/youtube/v3/docs/channels
   - https://developers.google.com/youtube/v3/docs/playlistItems
+  - https://developers.google.com/youtube/v3/docs/videos
 - Google OAuth 2.0:
   - https://developers.google.com/identity/protocols/oauth2
   - https://developers.google.com/oauthplayground/
