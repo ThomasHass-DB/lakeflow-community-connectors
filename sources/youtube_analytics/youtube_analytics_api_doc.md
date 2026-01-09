@@ -61,12 +61,14 @@ The object list is **static** (defined by the connector), not discovered dynamic
 | `captions` | Caption track content with metadata | `GET /captions` + `GET /captions/{id}` (download) | `snapshot` |
 | `channels` | Channel metadata | `GET /channels` | `snapshot` |
 | `comments` | Top-level comments and their replies for a video | `GET /commentThreads` | `cdc` (upserts based on `updatedAt`) |
+| `playlists` | Playlist metadata for a channel | `GET /playlists` | `snapshot` |
 | `videos` | Video metadata for all videos in a channel | `GET /videos` (with discovery via `channels` + `playlistItems`) | `snapshot` |
 
 **Connector scope**:
 - `captions`: Fetches caption track metadata and downloads the full caption content for videos. Creates one row per caption cue (subtitle line). **Note**: Caption download only works for videos owned by the authenticated user. Optionally accepts `video_id` (defaults to all videos in channel).
 - `channels`: Fetches channel metadata for one or more channels. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 - `comments`: Fetches all comments (top-level + replies) for videos. If `video_id` is provided, fetches comments for that specific video. If `video_id` is **not** provided, discovers all videos in the channel (using `channel_id` or authenticated user's channel) and fetches comments for all of them.
+- `playlists`: Fetches all playlists for a channel. Optionally accepts `playlist_id` (fetches specific playlist) or `channel_id` (defaults to authenticated user's channel).
 - `videos`: Discovers all videos for a channel via the uploads playlist, then fetches full metadata. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 
 
@@ -665,6 +667,135 @@ curl -X GET \
 ```
 
 
+### `playlists` object
+
+**Source endpoint**:
+- `GET /playlists` — retrieves playlist metadata for a channel or specific playlist(s).
+
+**Key behavior**:
+- The connector fetches playlist metadata using `playlists.list` with all relevant parts.
+- If `playlist_id` is provided, fetches that specific playlist.
+- If `channel_id` is provided (without `playlist_id`), fetches all playlists for that channel.
+- If neither is provided, uses `mine=true` to fetch all playlists for the authenticated user.
+- The connector flattens simple nested structures (`snippet.localized`) into individual fields.
+- The `localizations` object is stored as a JSON string for flexibility.
+
+**Table options**:
+- `playlist_id` (optional): The playlist ID to fetch. If provided, fetches only this specific playlist.
+- `channel_id` (optional): The channel ID to fetch playlists from. If not provided and `playlist_id` is not provided, defaults to the authenticated user's channel (`mine=true`).
+
+**High-level schema (connector view)**:
+
+| Column Name | Type | Source | Description |
+|------------|------|--------|-------------|
+| `id` | string | playlist | **Primary key.** The unique playlist ID. |
+| `channel_id` | string | snippet | The channel ID that owns this playlist. |
+| `title` | string | snippet | The playlist's title. |
+| `description` | string | snippet | The playlist's description. |
+| `published_at` | timestamp | snippet | When the playlist was created. |
+| `total_item_count` | long | contentDetails | Number of videos in the playlist. |
+| `podcast_status` | string | status | Podcast status: `enabled`, `disabled`, `unspecified`. |
+| `privacy_status` | string | status | Privacy: `public`, `private`, `unlisted`. |
+| `thumbnail_url` | string | snippet | URL of the high-quality thumbnail. |
+| `channel_title` | string | snippet | Title of the channel that owns the playlist. |
+| `default_language` | string | snippet | Default language for the playlist's metadata. |
+| `player_embed_html` | string | player | HTML iframe tag to embed the playlist player. |
+| `localized_title` | string | snippet.localized | Localized playlist title. |
+| `localized_description` | string | snippet.localized | Localized playlist description. |
+| `localizations` | string (JSON) | localizations | All localized metadata as JSON. |
+| `kind` | string | playlist | Resource kind (`youtube#playlist`). |
+| `etag` | string | playlist | ETag of the playlist resource. |
+
+**Example list request**:
+
+```bash
+curl -X GET \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status,contentDetails,player,localizations&mine=true&maxResults=50"
+```
+
+**Example list response**:
+
+```json
+{
+  "kind": "youtube#playlistListResponse",
+  "etag": "abc123...",
+  "pageInfo": {
+    "totalResults": 5,
+    "resultsPerPage": 50
+  },
+  "items": [
+    {
+      "kind": "youtube#playlist",
+      "etag": "def456...",
+      "id": "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf",
+      "snippet": {
+        "publishedAt": "2020-05-15T10:30:00Z",
+        "channelId": "UCuAXFkgsw1L7xaCfnd5JJOw",
+        "title": "My Favorite Songs",
+        "description": "A collection of my all-time favorite songs.",
+        "thumbnails": {
+          "default": { "url": "https://i.ytimg.com/vi/.../default.jpg", "width": 120, "height": 90 },
+          "medium": { "url": "https://i.ytimg.com/vi/.../mqdefault.jpg", "width": 320, "height": 180 },
+          "high": { "url": "https://i.ytimg.com/vi/.../hqdefault.jpg", "width": 480, "height": 360 }
+        },
+        "channelTitle": "Rick Astley",
+        "defaultLanguage": "en",
+        "localized": {
+          "title": "My Favorite Songs",
+          "description": "A collection of my all-time favorite songs."
+        }
+      },
+      "status": {
+        "privacyStatus": "public",
+        "podcastStatus": "disabled"
+      },
+      "contentDetails": {
+        "itemCount": 25
+      },
+      "player": {
+        "embedHtml": "<iframe width=\"640\" height=\"360\" src=\"//www.youtube.com/embed/videoseries?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf\" frameborder=\"0\" allowfullscreen></iframe>"
+      },
+      "localizations": {
+        "en": {
+          "title": "My Favorite Songs",
+          "description": "A collection of my all-time favorite songs."
+        },
+        "es": {
+          "title": "Mis Canciones Favoritas",
+          "description": "Una colección de mis canciones favoritas de todos los tiempos."
+        }
+      }
+    }
+  ]
+}
+```
+
+**Example flattened connector record**:
+
+```json
+{
+  "id": "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf",
+  "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+  "title": "My Favorite Songs",
+  "description": "A collection of my all-time favorite songs.",
+  "published_at": "2020-05-15T10:30:00.000Z",
+  "total_item_count": 25,
+  "podcast_status": "disabled",
+  "privacy_status": "public",
+  "thumbnail_url": "https://i.ytimg.com/vi/.../hqdefault.jpg",
+  "channel_title": "Rick Astley",
+  "default_language": "en",
+  "player_embed_html": "<iframe width=\"640\" height=\"360\" src=\"//www.youtube.com/embed/videoseries?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf\" frameborder=\"0\" allowfullscreen></iframe>",
+  "localized_title": "My Favorite Songs",
+  "localized_description": "A collection of my all-time favorite songs.",
+  "localizations": "{\"en\":{\"title\":\"My Favorite Songs\",\"description\":\"A collection...\"},\"es\":{\"title\":\"Mis Canciones Favoritas\",...}}",
+  "kind": "youtube#playlist",
+  "etag": "def456..."
+}
+```
+
+
 ## **Get Object Primary Keys**
 
 There is no dedicated metadata endpoint to get primary keys. Primary keys are defined **statically** based on the resource schema.
@@ -674,6 +805,7 @@ There is no dedicated metadata endpoint to get primary keys. Primary keys are de
 | `captions` | `id`, `start_ms` | string, long | Composite: caption track ID + cue start time |
 | `channels` | `id` | string | `id` from the `channels.list` response |
 | `comments` | `id` | string | `topLevelComment.id` from the `commentThreads` response |
+| `playlists` | `id` | string | `id` from the `playlists.list` response |
 | `videos` | `id` | string | `id` from the `videos.list` response |
 
 The connector uses these as immutable primary keys for upserts/snapshots.
@@ -691,6 +823,7 @@ Supported ingestion types (framework-level definitions):
 | `captions` | `snapshot` | Caption content can be updated. The connector re-syncs all caption content on each run. |
 | `channels` | `snapshot` | Channel metadata (title, description, stats) can change at any time. The connector re-syncs channel metadata on each run. |
 | `comments` | `cdc` | Comments have a stable primary key `id` and an `updatedAt` field that can be used as a cursor for incremental syncs. Comments can be edited by their authors, so updates are modeled as upserts. |
+| `playlists` | `snapshot` | Playlist metadata can change at any time. The connector re-syncs all playlist metadata on each run. |
 | `videos` | `snapshot` | Videos do not have a reliable `updatedAt` cursor. Video metadata (title, description, stats) can change at any time. The connector re-syncs all video metadata on each run. |
 
 **For `captions`**:
@@ -708,6 +841,11 @@ Supported ingestion types (framework-level definitions):
 - **Cursor field**: `updated_at` (from `topLevelComment.snippet.updatedAt`)
 - **Sort order**: The API does not support sorting by `updatedAt`; the connector uses `order=time` (default, orders by `publishedAt` descending) for initial fetch, then relies on lookback windows for incremental.
 - **Deletes**: YouTube does not expose deleted comments via this API; the connector treats the data as append/update only.
+
+**For `playlists`**:
+- **Primary key**: `id`
+- **Cursor field**: None (snapshot)
+- **Deletes**: YouTube does not expose deleted playlists via this API; playlists that are deleted will not appear on subsequent syncs.
 
 **For `videos`**:
 - **Primary key**: `id`
@@ -1133,6 +1271,8 @@ def fetch_channel_metadata(access_token, channel_id=None):
 | Official Docs | https://developers.google.com/youtube/v3/docs/commentThreads/list | 2026-01-08 | High | `commentThreads.list` endpoint parameters, pagination, errors. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/comments | 2026-01-08 | High | `comment` resource structure and properties. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/comments/list | 2026-01-08 | High | `comments.list` endpoint for fetching replies. |
+| Official Docs | https://developers.google.com/youtube/v3/docs/playlists | 2026-01-09 | High | `playlist` resource structure, properties, methods. |
+| Official Docs | https://developers.google.com/youtube/v3/docs/playlists/list | 2026-01-09 | High | `playlists.list` endpoint parameters, `mine` vs `channelId` vs `id` filters. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/videos | 2026-01-08 | High | `video` resource structure and all available parts. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/videos/list | 2026-01-08 | High | `videos.list` endpoint parameters, batching up to 50 IDs. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/channels | 2026-01-09 | High | `channel` resource structure, all parts including snippet, statistics, brandingSettings, status, topicDetails, localizations, contentOwnerDetails. |
@@ -1157,6 +1297,8 @@ def fetch_channel_metadata(access_token, channel_id=None):
   - `https://developers.google.com/youtube/v3/docs/commentThreads/list`
   - `https://developers.google.com/youtube/v3/docs/comments`
   - `https://developers.google.com/youtube/v3/docs/comments/list`
+  - `https://developers.google.com/youtube/v3/docs/playlists`
+  - `https://developers.google.com/youtube/v3/docs/playlists/list`
 - **Google OAuth 2.0 documentation** (highest confidence)
   - `https://developers.google.com/identity/protocols/oauth2/web-server`
 - **Fivetran YouTube Analytics connector documentation** (high confidence)

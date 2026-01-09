@@ -210,7 +210,7 @@ def register_lakeflow_source(spark):
 
     class LakeflowConnect:
         """
-        YouTube Data API v3 connector for fetching captions, channels, comments, and videos.
+        YouTube Data API v3 connector for fetching captions, channels, comments, playlists, and videos.
 
         This connector uses OAuth 2.0 with refresh token authentication.
         The UC connection must provide: client_id, client_secret, refresh_token.
@@ -223,6 +223,8 @@ def register_lakeflow_source(spark):
             - comments: All comments (top-level + replies) for videos. If video_id is
               provided, fetches comments for that video only. Otherwise, discovers all
               videos for the channel and fetches comments for all of them.
+            - playlists: All playlists for a channel. Optionally accepts playlist_id
+              (specific playlist) or channel_id (defaults to authenticated user).
             - videos: All video metadata for a channel. Optionally accepts channel_id.
         """
 
@@ -304,7 +306,7 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
             """
-            return ["captions", "channels", "comments", "videos"]
+            return ["captions", "channels", "comments", "playlists", "videos"]
 
         def _get_captions_schema(self) -> StructType:
             """Return the captions table schema (one row per caption cue)."""
@@ -365,6 +367,34 @@ def register_lakeflow_source(spark):
                     StructField("moderation_status", StringType(), True),
                     StructField("published_at", TimestampType(), True),
                     StructField("updated_at", TimestampType(), True),
+                ]
+            )
+
+        def _get_playlists_schema(self) -> StructType:
+            """Return the playlists table schema."""
+            return StructType(
+                [
+                    # Primary key and core fields
+                    StructField("id", StringType(), False),
+                    StructField("channel_id", StringType(), True),
+                    StructField("title", StringType(), True),
+                    StructField("description", StringType(), True),
+                    StructField("published_at", TimestampType(), True),
+                    StructField("total_item_count", LongType(), True),
+                    StructField("podcast_status", StringType(), True),
+                    StructField("privacy_status", StringType(), True),
+                    StructField("thumbnail_url", StringType(), True),
+                    StructField("channel_title", StringType(), True),
+                    StructField("default_language", StringType(), True),
+                    StructField("player_embed_html", StringType(), True),
+                    # Localized fields (flattened)
+                    StructField("localized_title", StringType(), True),
+                    StructField("localized_description", StringType(), True),
+                    # Localizations stored as JSON
+                    StructField("localizations", StringType(), True),
+                    # Resource metadata
+                    StructField("kind", StringType(), True),
+                    StructField("etag", StringType(), True),
                 ]
             )
 
@@ -524,6 +554,8 @@ def register_lakeflow_source(spark):
                 return self._get_channels_schema()
             if table_name == "comments":
                 return self._get_comments_schema()
+            if table_name == "playlists":
+                return self._get_playlists_schema()
             if table_name == "videos":
                 return self._get_videos_schema()
 
@@ -535,6 +567,10 @@ def register_lakeflow_source(spark):
             """
             Fetch metadata for the given table.
 
+            For `captions`:
+                - ingestion_type: snapshot
+                - primary_keys: ["id", "start_ms"]
+
             For `channels`:
                 - ingestion_type: snapshot
                 - primary_keys: ["id"]
@@ -543,6 +579,10 @@ def register_lakeflow_source(spark):
                 - ingestion_type: cdc
                 - primary_keys: ["id"]
                 - cursor_field: updated_at
+
+            For `playlists`:
+                - ingestion_type: snapshot
+                - primary_keys: ["id"]
 
             For `videos`:
                 - ingestion_type: snapshot
@@ -566,6 +606,11 @@ def register_lakeflow_source(spark):
                     "primary_keys": ["id"],
                     "cursor_field": "updated_at",
                     "ingestion_type": "cdc",
+                }
+            if table_name == "playlists":
+                return {
+                    "primary_keys": ["id"],
+                    "ingestion_type": "snapshot",
                 }
             if table_name == "videos":
                 return {
@@ -615,6 +660,16 @@ def register_lakeflow_source(spark):
                 - max_results: Page size for API calls (max 100, default 100).
                 - text_format: 'plainText' or 'html' (default 'plainText').
 
+            For the `playlists` table:
+                - Fetches all playlists for a channel
+                - Or fetches a specific playlist by ID
+
+            Optional table_options for `playlists`:
+                - playlist_id: The playlist ID to fetch. If provided, fetches only
+                  this specific playlist.
+                - channel_id: The channel ID to fetch playlists from. Defaults to
+                  authenticated user's channel if not provided.
+
             For the `videos` table:
                 - Discovers all videos for a channel via uploads playlist
                 - Fetches full video metadata for all discovered videos
@@ -632,6 +687,8 @@ def register_lakeflow_source(spark):
                 return self._read_channels(start_offset, table_options)
             if table_name == "comments":
                 return self._read_comments(start_offset, table_options)
+            if table_name == "playlists":
+                return self._read_playlists(start_offset, table_options)
             if table_name == "videos":
                 return self._read_videos(start_offset, table_options)
 
@@ -1540,6 +1597,176 @@ def register_lakeflow_source(spark):
                 # Content owner details (flattened - YouTube Partners only)
                 "content_owner_id": content_owner_details.get("contentOwner"),
                 "content_owner_time_linked": content_owner_details.get("timeLinked"),
+            }
+
+        # -------------------------------------------------------------------------
+        # Playlists table implementation
+        # -------------------------------------------------------------------------
+
+        def _read_playlists(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the `playlists` table.
+
+            If playlist_id is provided, fetches that specific playlist.
+            If channel_id is provided (without playlist_id), fetches all playlists
+            for that channel.
+            Otherwise, fetches all playlists for the authenticated user.
+            """
+            playlist_id = table_options.get("playlist_id")
+            channel_id = table_options.get("channel_id")
+
+            def generate_playlist_records():
+                if playlist_id:
+                    # Fetch specific playlist by ID
+                    playlists = self._fetch_playlists_by_id(playlist_id)
+                elif channel_id:
+                    # Fetch all playlists for specified channel
+                    playlists = self._fetch_playlists_by_channel(channel_id)
+                else:
+                    # Fetch all playlists for authenticated user
+                    playlists = self._fetch_playlists_mine()
+
+                for playlist in playlists:
+                    yield self._build_playlist_record(playlist)
+
+            return generate_playlist_records(), {}
+
+        def _fetch_playlists_by_id(self, playlist_id: str) -> Iterator[dict]:
+            """Fetch a specific playlist by its ID."""
+            url = f"{self.BASE_URL}/playlists"
+            params = {
+                "part": "snippet,status,contentDetails,player,localizations",
+                "id": playlist_id,
+                "maxResults": 50,
+            }
+
+            response = self._session.get(
+                url, headers=self._get_headers(), params=params, timeout=30
+            )
+
+            if response.status_code == 404:
+                return
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"playlists.list failed: {response.status_code} {response.text}"
+                )
+
+            data = response.json()
+            for item in data.get("items", []):
+                yield item
+
+        def _fetch_playlists_by_channel(self, channel_id: str) -> Iterator[dict]:
+            """Fetch all playlists for a specific channel (paginated)."""
+            url = f"{self.BASE_URL}/playlists"
+            page_token = None
+
+            while True:
+                params = {
+                    "part": "snippet,status,contentDetails,player,localizations",
+                    "channelId": channel_id,
+                    "maxResults": 50,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                response = self._session.get(
+                    url, headers=self._get_headers(), params=params, timeout=30
+                )
+
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"playlists.list failed: {response.status_code} {response.text}"
+                    )
+
+                data = response.json()
+                for item in data.get("items", []):
+                    yield item
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        def _fetch_playlists_mine(self) -> Iterator[dict]:
+            """Fetch all playlists for the authenticated user (paginated)."""
+            url = f"{self.BASE_URL}/playlists"
+            page_token = None
+
+            while True:
+                params = {
+                    "part": "snippet,status,contentDetails,player,localizations",
+                    "mine": "true",
+                    "maxResults": 50,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                response = self._session.get(
+                    url, headers=self._get_headers(), params=params, timeout=30
+                )
+
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"playlists.list failed: {response.status_code} {response.text}"
+                    )
+
+                data = response.json()
+                for item in data.get("items", []):
+                    yield item
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        def _build_playlist_record(self, playlist: dict) -> dict[str, Any]:
+            """Build a flattened playlist record from the API response."""
+            snippet = playlist.get("snippet", {})
+            status = playlist.get("status", {})
+            content_details = playlist.get("contentDetails", {})
+            player = playlist.get("player", {})
+            localizations = playlist.get("localizations")
+            localized = snippet.get("localized", {})
+
+            # Get high-quality thumbnail URL
+            thumbnails = snippet.get("thumbnails", {})
+            thumbnail_url = None
+            for quality in ["maxres", "standard", "high", "medium", "default"]:
+                if quality in thumbnails:
+                    thumbnail_url = thumbnails[quality].get("url")
+                    break
+
+            # Helper to serialize objects to JSON strings
+            def to_json_string(obj: Any) -> str | None:
+                if obj is None or obj == {}:
+                    return None
+                try:
+                    return json.dumps(obj)
+                except (TypeError, ValueError):
+                    return None
+
+            return {
+                # Primary key and core fields
+                "id": playlist.get("id"),
+                "channel_id": snippet.get("channelId"),
+                "title": snippet.get("title"),
+                "description": snippet.get("description"),
+                "published_at": snippet.get("publishedAt"),
+                "total_item_count": content_details.get("itemCount"),
+                "podcast_status": status.get("podcastStatus"),
+                "privacy_status": status.get("privacyStatus"),
+                "thumbnail_url": thumbnail_url,
+                "channel_title": snippet.get("channelTitle"),
+                "default_language": snippet.get("defaultLanguage"),
+                "player_embed_html": player.get("embedHtml"),
+                # Localized fields (flattened)
+                "localized_title": localized.get("title"),
+                "localized_description": localized.get("description"),
+                # Localizations stored as JSON
+                "localizations": to_json_string(localizations),
+                # Resource metadata
+                "kind": playlist.get("kind"),
+                "etag": playlist.get("etag"),
             }
 
 

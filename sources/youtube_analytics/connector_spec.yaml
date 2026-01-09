@@ -36,4 +36,4 @@ connection:
 # parameter of the UC connection to allow them to be passed through.
 # Use a comma-separated string of option names.
 # ============================================================================
-external_options_allowlist: "video_id,max_results,text_format,channel_id"
+external_options_allowlist: "video_id,max_results,text_format,channel_id,playlist_id"

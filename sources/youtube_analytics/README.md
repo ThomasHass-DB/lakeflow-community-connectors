@@ -1,6 +1,6 @@
 # Lakeflow YouTube Analytics Community Connector
 
-This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (captions, channels, comments, and videos) via the YouTube Data API v3 into Databricks.
+This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (captions, channels, comments, playlists, and videos) via the YouTube Data API v3 into Databricks.
 
 ## Prerequisites
 
@@ -22,10 +22,10 @@ Provide the following **connection-level** options when configuring the connecto
 | `client_id`     | string | yes      | OAuth 2.0 client ID from the Google Cloud Console.                         | `123456789-abc.apps.googleusercontent.com` |
 | `client_secret` | string | yes      | OAuth 2.0 client secret from the Google Cloud Console.                     | `GOCSPX-xxx...`        |
 | `refresh_token` | string | yes      | OAuth 2.0 refresh token obtained via the OAuth consent flow.               | `1//04xxx...`          |
-| `externalOptionsAllowList` | string | yes | Comma-separated list of table-specific option names that are allowed to be passed through to the connector. | `video_id,max_results,text_format,channel_id` |
+| `externalOptionsAllowList` | string | yes | Comma-separated list of table-specific option names that are allowed to be passed through to the connector. | `video_id,max_results,text_format,channel_id,playlist_id` |
 
 The full list of supported table-specific options for `externalOptionsAllowList` is:
-`video_id,max_results,text_format,channel_id`
+`video_id,max_results,text_format,channel_id,playlist_id`
 
 > **Note**: Table-specific options such as `video_id` are **not** connection parameters. They are provided per-table via table options in the pipeline specification. These option names must be included in `externalOptionsAllowList` for the connection to allow them.
 
@@ -70,7 +70,7 @@ A Unity Catalog connection for this connector can be created in two ways via the
 
 1. Follow the **Lakeflow Community Connector** UI flow from the **Add Data** page.
 2. Select any existing Lakeflow Community Connector connection for this source or create a new one.
-3. Set `externalOptionsAllowList` to `video_id,max_results,text_format,channel_id` (required for this connector to pass table-specific options).
+3. Set `externalOptionsAllowList` to `video_id,max_results,text_format,channel_id,playlist_id` (required for this connector to pass table-specific options).
 
 The connection can also be created using the standard Unity Catalog API.
 
@@ -81,6 +81,7 @@ The YouTube Analytics connector exposes a **static list** of tables:
 - `captions`
 - `channels`
 - `comments`
+- `playlists`
 - `videos`
 
 ### Object Summary, Primary Keys, and Ingestion Mode
@@ -90,6 +91,7 @@ The YouTube Analytics connector exposes a **static list** of tables:
 | `captions` | Caption track content (one row per subtitle cue)               | `snapshot`     | `id`, `start_ms`   | n/a               |
 | `channels` | Channel metadata                                               | `snapshot`     | `id`               | n/a               |
 | `comments` | All comments (top-level and replies) for a video or entire channel | `cdc`      | `id`               | `updated_at`      |
+| `playlists`| All playlists for a channel                                    | `snapshot`     | `id`               | n/a               |
 | `videos`   | All video metadata for a channel                               | `snapshot`     | `id`               | n/a               |
 
 > **Note**: The `captions` table downloads and parses caption files. This only works for videos **owned by the authenticated user**. Attempting to fetch captions for other users' videos will skip those videos.
@@ -110,6 +112,10 @@ Table-specific options are passed via the pipeline spec under `table` in `object
   - `channel_id` (string, optional): The channel ID to use when discovering videos (only used when `video_id` is not provided). Defaults to the authenticated user's channel.
   - `max_results` (integer, optional): Page size for API pagination. Range 1-100, defaults to 100.
   - `text_format` (string, optional): Format for comment text. Either `"plainText"` or `"html"`. Defaults to `"plainText"`.
+
+- **`playlists`**:
+  - `playlist_id` (string, optional): The playlist ID to fetch. If provided, fetches only this specific playlist.
+  - `channel_id` (string, optional): The channel ID to fetch playlists from. If not provided, defaults to the authenticated user's channel.
 
 - **`videos`**:
   - `channel_id` (string, optional): The channel ID to fetch videos from. If not provided, defaults to the authenticated user's channel.
@@ -170,6 +176,30 @@ The `comments` table contains a flattened schema combining fields from both `com
 | `moderation_status`        | string  | comment           | Moderation status (if applicable)                              |
 | `published_at`             | timestamp | comment         | Timestamp when comment was published                           |
 | `updated_at`               | timestamp | comment         | Timestamp when comment was last updated (cursor)               |
+
+### `playlists` Schema Details
+
+The `playlists` table contains playlist metadata with localization support:
+
+| Field                    | Type           | Description                                                    |
+|--------------------------|----------------|----------------------------------------------------------------|
+| `id`                     | string         | Unique playlist identifier (primary key)                       |
+| `channel_id`             | string         | ID of the channel that owns the playlist                       |
+| `title`                  | string         | Playlist title                                                 |
+| `description`            | string         | Playlist description                                           |
+| `published_at`           | timestamp      | Timestamp when playlist was created                            |
+| `total_item_count`       | long           | Number of videos in the playlist                               |
+| `podcast_status`         | string         | Podcast status: `enabled`, `disabled`, `unspecified`           |
+| `privacy_status`         | string         | Privacy status: `public`, `private`, `unlisted`                |
+| `thumbnail_url`          | string         | URL of the highest-resolution thumbnail                        |
+| `channel_title`          | string         | Title of the channel that owns the playlist                    |
+| `default_language`       | string         | Default language for playlist metadata                         |
+| `player_embed_html`      | string         | HTML iframe tag to embed the playlist player                   |
+| `localized_title`        | string         | Localized playlist title                                       |
+| `localized_description`  | string         | Localized playlist description                                 |
+| `localizations`          | string (JSON)  | All localized metadata as JSON                                 |
+| `kind`                   | string         | Resource kind (`youtube#playlist`)                             |
+| `etag`                   | string         | ETag for caching                                               |
 
 ### `videos` Schema Details
 
@@ -287,6 +317,11 @@ Example `pipeline_spec` snippet:
       },
       {
         "table": {
+          "source_table": "playlists"
+        }
+      },
+      {
+        "table": {
           "source_table": "videos"
         }
       }
@@ -304,6 +339,7 @@ Example `pipeline_spec` snippet:
 - For `comments`: 
   - If `video_id` is provided, fetches comments for that specific video.
   - If `video_id` is **not** provided, discovers all videos in the channel and fetches comments for **all** of them (channel-wide mode).
+- For `playlists`: No required options; defaults to the authenticated user's channel. Optionally provide `playlist_id` (specific playlist) or `channel_id` (different channel).
 - For `videos`: No required options; defaults to the authenticated user's channel. Optionally provide `channel_id` to fetch videos from a different channel.
 
 ### Step 3: Run and Schedule the Pipeline
@@ -318,6 +354,7 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
   - If `video_id` is specified, fetches all comments for that video. 
   - If `video_id` is not specified, discovers all videos in the channel and fetches comments for all of them.
   - On subsequent runs, the connector uses the stored cursor (`updated_at`) to support incremental sync patterns.
+- For `playlists`: All playlist metadata is fetched on every run (snapshot ingestion).
 - For `videos`: All video metadata is fetched on every run (snapshot ingestion). The connector discovers videos via the channel's uploads playlist.
 
 #### Best Practices
@@ -362,6 +399,7 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
   - https://developers.google.com/youtube/v3/docs/commentThreads
   - https://developers.google.com/youtube/v3/docs/comments
   - https://developers.google.com/youtube/v3/docs/playlistItems
+  - https://developers.google.com/youtube/v3/docs/playlists
   - https://developers.google.com/youtube/v3/docs/videos
 - Google OAuth 2.0:
   - https://developers.google.com/identity/protocols/oauth2
