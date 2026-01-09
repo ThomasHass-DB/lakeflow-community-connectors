@@ -1,6 +1,18 @@
 # Lakeflow YouTube Analytics Community Connector
 
-This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (captions, channels, comments, playlists, and videos) via the YouTube Data API v3 into Databricks.
+This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data into Databricks.
+
+## API Coverage
+
+This connector provides **comprehensive coverage of the YouTube Data API v3**, including all core entities needed for YouTube analytics:
+
+- **captions** – Caption/subtitle tracks and their content
+- **channels** – Channel metadata and statistics  
+- **comments** – All comments and replies on videos
+- **playlists** – Playlist metadata and organization
+- **videos** – Video metadata, statistics, and content details
+
+> **Note**: The YouTube Analytics API and YouTube Reporting API (for aggregated analytics metrics like watch time, demographics, and revenue data) are **not currently supported** but may be added in a future version of this connector.
 
 ## Prerequisites
 
@@ -98,13 +110,7 @@ The connection can also be created using the standard Unity Catalog API.
 
 ## Supported Objects
 
-The YouTube Analytics connector exposes a **static list** of tables:
-
-- `captions`
-- `channels`
-- `comments`
-- `playlists`
-- `videos`
+The connector exposes the following tables (all from YouTube Data API v3):
 
 ### Object Summary, Primary Keys, and Ingestion Mode
 
@@ -409,6 +415,50 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
 - **Quota exceeded**:
   - YouTube Data API has daily quota limits (typically 10,000 units per Google Cloud project).
   - Reduce sync frequency or request a quota increase in the Google Cloud Console.
+
+## Sample Queries
+
+Once your YouTube data is ingested, you can use these sample queries to analyze your channel data using Databricks SQL and AI functions.
+
+### Get All Captions for a Video (in order)
+
+```sql
+SELECT v.title, c.start_ms, c.end_ms, c.text 
+FROM captions c 
+JOIN videos v ON v.id = c.video_id
+WHERE v.title LIKE '%'
+ORDER BY c.start_ms ASC
+```
+
+### Translate Comments to German
+
+```sql
+SELECT v.title, c.text_display, ai_translate(c.text_display, 'ger') AS comment_german
+FROM comments c 
+JOIN videos v ON v.id = c.video_id
+WHERE v.title LIKE '%'
+```
+
+### Analyze Comment Sentiment
+
+```sql
+SELECT v.title, c.text_display, ai_analyze_sentiment(c.text_display) AS sentiment
+FROM comments c 
+JOIN videos v ON v.id = c.video_id
+WHERE v.title LIKE '%'
+```
+
+### Classify Comments by Category
+
+```sql
+SELECT v.title, c.text_display, 
+       ai_classify(c.text_display, ARRAY("future video recommendation", "video feedback", "unrelated question")) AS classification
+FROM comments c 
+JOIN videos v ON v.id = c.video_id
+WHERE v.title LIKE '%'
+```
+
+> **Note**: The `ai_translate`, `ai_analyze_sentiment`, and `ai_classify` functions require Databricks AI Functions to be enabled in your workspace.
 
 ## API Quota Information
 
