@@ -385,8 +385,44 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration.
   - The specified `video_id` does not exist or is not accessible.
   
 - **Quota exceeded**:
-  - YouTube Data API has daily quota limits (typically 10,000 units). Each `commentThreads.list` call costs ~1 unit.
+  - YouTube Data API has daily quota limits (typically 10,000 units per Google Cloud project).
   - Reduce sync frequency or request a quota increase in the Google Cloud Console.
+
+## API Quota Information
+
+> **Important**: The YouTube Data API quota is tied to **your Google Cloud project**, not to this connector or any third-party tool. Whether you use this connector, Fivetran, or any other solution, API calls consume quota from your own project.
+
+### Default Quota
+- **10,000 units per day** per Google Cloud project
+- Resets at midnight Pacific Time
+
+### Quota Costs by Operation
+
+| Operation | Approx. Cost | Notes |
+|-----------|--------------|-------|
+| `playlists.list` | ~1 unit | Per page (up to 50 results) |
+| `videos.list` | ~1 unit | Can batch up to 50 video IDs |
+| `commentThreads.list` | ~1 unit | Per page (up to 100 results) |
+| `channels.list` | ~1 unit | Per request |
+| `captions.list` | ~50 units | Per video |
+| `captions.download` | ~200 units | **Most expensive** - per track |
+
+### Tips to Reduce Quota Usage
+
+1. **Use specific `video_id`** instead of fetching comments/captions for entire channel
+2. **Skip `captions` table** if you don't need transcript data (highest quota cost)
+3. **Reduce sync frequency** - daily syncs instead of hourly
+4. **Use incremental sync** for `comments` table (uses cursor to minimize re-fetching)
+
+### Increasing Your Quota
+
+To request a quota increase:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → YouTube Data API v3
+2. Click "Quotas" → "Request increase"
+3. Fill out the form explaining your use case
+4. Wait for approval (typically 1-2 weeks)
+
+Alternatively, create additional Google Cloud projects (each gets its own 10,000 unit quota).
 
 ## References
 
