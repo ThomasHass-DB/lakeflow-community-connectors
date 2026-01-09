@@ -39,28 +39,50 @@ The full list of supported table-specific options for `externalOptionsAllowList`
    - Navigate to **APIs & Services → Library**.
    - Search for "YouTube Data API v3" and click **Enable**.
 
-#### Step 2: Create OAuth 2.0 Credentials
+#### Step 2: Configure OAuth Consent Screen
 
-1. In the Google Cloud Console, go to **APIs & Services → Credentials**.
-2. Click **Create Credentials → OAuth client ID**.
-3. If prompted, configure the **OAuth consent screen**:
-   - Choose **External** (or Internal if within a Google Workspace organization).
-   - Fill in the required app information.
-   - Add the scope: `https://www.googleapis.com/auth/youtube.force-ssl`.
-   - Add your email as a **test user** (required for apps in testing mode).
-4. For application type, select **Web application**.
-5. Add `https://developers.google.com/oauthplayground` as an **Authorized redirect URI**.
-6. Click **Create** and note your **Client ID** and **Client Secret**.
+1. In the Google Cloud Console, go to **APIs & Services → OAuth consent screen**.
+2. Click **Get Started**.
+3. Fill in the required information:
+   - **App name**: A name for your application (e.g., "YouTube Connector")
+   - **User support email**: Your email address
+   - **Audience**: Select **External** (or Internal if within a Google Workspace organization)
+   - **Contact information**: Your email address
+4. Click **Continue** / **Save**.
 
-#### Step 3: Obtain a Refresh Token
+#### Step 3: Create OAuth 2.0 Client
+
+1. In the OAuth consent screen, go to **Clients** (or navigate to **APIs & Services → Credentials**).
+2. Click **Create Client** (or **Create Credentials → OAuth client ID**).
+3. Select application type: **Web application**.
+4. Give it a name (e.g., "YouTube Connector Client").
+5. Under **Authorized redirect URIs**, add: `https://developers.google.com/oauthplayground`
+6. Click **Create**.
+7. Download the credentials file or copy the **Client ID** and **Client Secret** from the confirmation dialog.
+
+#### Step 4: Add Test Users
+
+1. In the OAuth consent screen, go to **Audience**.
+2. Click **Add users** under Test users.
+3. Add the email address associated with your YouTube account (the account you'll use to authorize API access).
+4. Click **Save**.
+
+#### Step 5: Configure API Scopes
+
+1. In the OAuth consent screen, go to **Data Access**.
+2. Click **Add or remove scopes**.
+3. Find and select: `https://www.googleapis.com/auth/youtube.force-ssl`
+4. Click **Update** to save.
+
+#### Step 6: Obtain a Refresh Token
 
 1. Go to the [Google OAuth 2.0 Playground](https://developers.google.com/oauthplayground/).
-2. Click the **gear icon** (settings) in the top right.
+2. Click the **gear icon** (⚙️) in the top right.
 3. Check **Use your own OAuth credentials**.
 4. Enter your **Client ID** and **Client Secret**.
 5. In the left panel, find **YouTube Data API v3** and select the scope:
    - `https://www.googleapis.com/auth/youtube.force-ssl`
-6. Click **Authorize APIs** and complete the consent flow.
+6. Click **Authorize APIs** and complete the consent flow (sign in with the test user you added).
 7. Click **Exchange authorization code for tokens**.
 8. Copy the **Refresh Token** from the response.
 
