@@ -1,6 +1,6 @@
 # Lakeflow YouTube Analytics Community Connector
 
-This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (comments and videos) via the YouTube Data API v3 into Databricks.
+This documentation describes how to configure and use the **YouTube Analytics** Lakeflow community connector to ingest YouTube data (channels, comments, and videos) via the YouTube Data API v3 into Databricks.
 
 ## Prerequisites
 
@@ -78,6 +78,7 @@ The connection can also be created using the standard Unity Catalog API.
 
 The YouTube Analytics connector exposes a **static list** of tables:
 
+- `channels`
 - `comments`
 - `videos`
 
@@ -85,12 +86,16 @@ The YouTube Analytics connector exposes a **static list** of tables:
 
 | Table      | Description                                                    | Ingestion Type | Primary Key | Incremental Cursor |
 |------------|----------------------------------------------------------------|----------------|-------------|--------------------|
+| `channels` | Channel metadata                                               | `snapshot`     | `id`        | n/a                |
 | `comments` | All comments (top-level and replies) for a video or entire channel | `cdc`          | `id`        | `updated_at`       |
 | `videos`   | All video metadata for a channel                               | `snapshot`     | `id`        | n/a                |
 
 ### Required and Optional Table Options
 
 Table-specific options are passed via the pipeline spec under `table` in `objects`:
+
+- **`channels`**:
+  - `channel_id` (string, optional): The channel ID to fetch. If not provided, defaults to the authenticated user's channel.
 
 - **`comments`**:
   - `video_id` (string, optional): The YouTube video ID to fetch comments for. If not provided, fetches comments for **all videos** in the channel.
@@ -157,6 +162,38 @@ The `videos` table contains a flattened schema with metadata from all video reso
 
 *See the full schema with 54 fields in the connector implementation.*
 
+### `channels` Schema Details
+
+The `channels` table contains a mixed schema with some fields flattened and some stored as JSON:
+
+| Field                      | Type           | Description                                                    |
+|----------------------------|----------------|----------------------------------------------------------------|
+| `id`                       | string         | Unique channel identifier (primary key)                        |
+| `etag`                     | string         | ETag for caching                                               |
+| `kind`                     | string         | Resource kind (`youtube#channel`)                              |
+| `title`                    | string         | Channel title                                                  |
+| `description`              | string         | Channel description                                            |
+| `custom_url`               | string         | Channel's custom URL (handle)                                  |
+| `published_at`             | string         | ISO 8601 timestamp when channel was created                    |
+| `country`                  | string         | Country associated with the channel                            |
+| `thumbnail_url`            | string         | URL of channel thumbnail (high quality)                        |
+| `default_language`         | string         | Default metadata language                                      |
+| `localized_title`          | string         | Localized channel title                                        |
+| `localized_description`    | string         | Localized channel description                                  |
+| `total_view_count`         | long           | Total views across all videos                                  |
+| `total_subscriber_count`   | long           | Subscriber count (rounded to 3 significant figures)            |
+| `total_video_count`        | long           | Total number of public videos                                  |
+| `hidden_subscriber_count`  | boolean        | Whether subscriber count is hidden                             |
+| `uploads_playlist_id`      | string         | Playlist ID containing all uploaded videos                     |
+| `likes_playlist_id`        | string         | Playlist ID containing liked videos (may be null)              |
+| `keywords`                 | string         | Keywords from branding settings                                |
+| `topic_categories`         | array<string>  | Wikipedia URLs describing channel topics                       |
+| `status`                   | string (JSON)  | Channel status object as JSON                                  |
+| `branding_settings`        | string (JSON)  | Channel branding settings as JSON                              |
+| `localizations`            | string (JSON)  | All localized metadata as JSON                                 |
+| `content_owner_id`         | string         | Content owner ID (YouTube Partners only)                       |
+| `content_owner_time_linked`| string         | When channel was linked to content owner                       |
+
 ## Data Type Mapping
 
 YouTube API JSON fields are mapped to Spark types as follows:
@@ -168,6 +205,7 @@ YouTube API JSON fields are mapped to Spark types as follows:
 | unsigned integer     | `likeCount`, `viewCount`                    | `LongType`          | All integers use `LongType` to avoid overflow |
 | ISO 8601 datetime    | `publishedAt`, `updatedAt`                  | `StringType`        | Stored as UTC strings; can be cast downstream |
 | array of strings     | `tags`, `topicCategories`                   | `ArrayType(StringType)` | Arrays preserved as nested collections |
+| nested object        | `status`, `brandingSettings`                | `StringType` (JSON) | Complex objects serialized as JSON strings |
 
 ## How to Run
 
@@ -191,6 +229,11 @@ Example `pipeline_spec` snippet:
     "object": [
       {
         "table": {
+          "source_table": "channels"
+        }
+      },
+      {
+        "table": {
           "source_table": "comments",
           "video_id": "dQw4w9WgXcQ"
         }
@@ -211,6 +254,7 @@ Example `pipeline_spec` snippet:
 ```
 
 - `connection_name` must point to the UC connection configured with your OAuth credentials.
+- For `channels`: No required options; defaults to the authenticated user's channel. Optionally provide `channel_id` to fetch a different channel.
 - For `comments`: 
   - If `video_id` is provided, fetches comments for that specific video.
   - If `video_id` is **not** provided, discovers all videos in the channel and fetches comments for **all** of them (channel-wide mode).
@@ -220,6 +264,7 @@ Example `pipeline_spec` snippet:
 
 Run the pipeline using your standard Lakeflow / Databricks orchestration.
 
+- For `channels`: Channel metadata is fetched on every run (snapshot ingestion).
 - For `comments`: 
   - If `video_id` is specified, fetches all comments for that video. 
   - If `video_id` is not specified, discovers all videos in the channel and fetches comments for all of them.

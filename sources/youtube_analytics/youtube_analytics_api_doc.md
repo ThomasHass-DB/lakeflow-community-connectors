@@ -60,10 +60,12 @@ The object list is **static** (defined by the connector), not discovered dynamic
 |------------|-------------|------------------|----------------|
 | `comments` | Top-level comments and their replies for a video | `GET /commentThreads` | `cdc` (upserts based on `updatedAt`) |
 | `videos` | Video metadata for all videos in a channel | `GET /videos` (with discovery via `channels` + `playlistItems`) | `snapshot` |
+| `channels` | Channel metadata | `GET /channels` | `snapshot` |
 
 **Connector scope**:
 - `comments`: Fetches all comments (top-level + replies) for videos. If `video_id` is provided, fetches comments for that specific video. If `video_id` is **not** provided, discovers all videos in the channel (using `channel_id` or authenticated user's channel) and fetches comments for all of them.
 - `videos`: Discovers all videos for a channel via the uploads playlist, then fetches full metadata. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
+- `channels`: Fetches channel metadata for one or more channels. Optionally accepts `channel_id` table option (defaults to authenticated user's channel).
 
 
 ## **Object Schema**
@@ -351,6 +353,160 @@ curl -X GET \
 ```
 
 
+### `channels` object
+
+**Source endpoint**:
+- `GET /channels` — retrieves channel metadata for the authenticated user or a specified channel.
+
+**Key behavior**:
+- The connector fetches channel metadata using `channels.list` with all relevant parts.
+- If `channel_id` is provided, fetches that specific channel. Otherwise, uses `mine=true` to fetch the authenticated user's channel.
+- The connector flattens simple nested structures (`snippet.localized`, `contentOwnerDetails`) into individual fields.
+- Complex nested structures (`status`, `brandingSettings`, `localizations`) are stored as JSON strings for flexibility.
+
+**Table options**:
+- `channel_id` (optional): The channel ID to fetch. If not provided, defaults to the authenticated user's channel (`mine=true`).
+
+**High-level schema (connector view)** — Mixed flattening approach:
+
+| Column Name | Type | Source | Description |
+|------------|------|--------|-------------|
+| `id` | string | channel | **Primary key.** The unique channel ID. |
+| `etag` | string | channel | The ETag of the channel resource. |
+| `kind` | string | channel | The resource type (`youtube#channel`). |
+| `title` | string | snippet | The channel's title. |
+| `description` | string | snippet | The channel's description. |
+| `custom_url` | string | snippet | The channel's custom URL (handle). |
+| `published_at` | string (ISO 8601) | snippet | Date/time the channel was created. |
+| `country` | string | snippet | The country associated with the channel. |
+| `thumbnail_url` | string | snippet.thumbnails | URL of the channel's thumbnail (high quality). |
+| `default_language` | string | snippet | The language of the channel's default metadata. |
+| `localized_title` | string | snippet.localized | Localized channel title. |
+| `localized_description` | string | snippet.localized | Localized channel description. |
+| `total_view_count` | long | statistics | Total views across all videos. |
+| `total_subscriber_count` | long | statistics | Total subscriber count (rounded to 3 significant figures). |
+| `total_video_count` | long | statistics | Total number of public videos. |
+| `hidden_subscriber_count` | boolean | statistics | Whether the subscriber count is hidden. |
+| `uploads_playlist_id` | string | contentDetails.relatedPlaylists | Playlist ID containing all uploaded videos. |
+| `likes_playlist_id` | string | contentDetails.relatedPlaylists | Playlist ID containing liked videos (may be null). |
+| `keywords` | string | brandingSettings.channel | Keywords associated with the channel. |
+| `topic_categories` | array of strings | topicDetails | Wikipedia URLs describing channel topics. |
+| `status` | string (JSON) | status | Channel status object as JSON (privacyStatus, isLinked, longUploadsStatus, madeForKids, selfDeclaredMadeForKids). |
+| `branding_settings` | string (JSON) | brandingSettings | Channel branding settings as JSON. |
+| `localizations` | string (JSON) | localizations | All localized metadata as JSON. |
+| `content_owner_id` | string | contentOwnerDetails | Content owner ID (YouTube Partners only). |
+| `content_owner_time_linked` | string (ISO 8601) | contentOwnerDetails | When the channel was linked to the content owner. |
+
+**Example request**:
+
+```bash
+# Fetch authenticated user's channel
+curl -X GET \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  "https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails,statistics,topicDetails,status,brandingSettings,localizations,contentOwnerDetails&mine=true"
+
+# Fetch specific channel by ID
+curl -X GET \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  "https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails,statistics,topicDetails,status,brandingSettings,localizations,contentOwnerDetails&id=UCxxxxxxxxxx"
+```
+
+**Example API response (truncated)**:
+
+```json
+{
+  "kind": "youtube#channelListResponse",
+  "etag": "abc123...",
+  "items": [
+    {
+      "kind": "youtube#channel",
+      "etag": "def456...",
+      "id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+      "snippet": {
+        "title": "Rick Astley",
+        "description": "Official YouTube channel...",
+        "customUrl": "@rickastley",
+        "publishedAt": "2006-09-17T06:57:33Z",
+        "thumbnails": {
+          "default": {"url": "https://yt3.ggpht.com/.../default.jpg"},
+          "high": {"url": "https://yt3.ggpht.com/.../high.jpg"}
+        },
+        "localized": {
+          "title": "Rick Astley",
+          "description": "Official YouTube channel..."
+        },
+        "country": "GB"
+      },
+      "contentDetails": {
+        "relatedPlaylists": {
+          "likes": "",
+          "uploads": "UUuAXFkgsw1L7xaCfnd5JJOw"
+        }
+      },
+      "statistics": {
+        "viewCount": "2500000000",
+        "subscriberCount": "15000000",
+        "hiddenSubscriberCount": false,
+        "videoCount": "150"
+      },
+      "topicDetails": {
+        "topicCategories": [
+          "https://en.wikipedia.org/wiki/Pop_music",
+          "https://en.wikipedia.org/wiki/Music"
+        ]
+      },
+      "status": {
+        "privacyStatus": "public",
+        "isLinked": true,
+        "longUploadsStatus": "allowed",
+        "madeForKids": false
+      },
+      "brandingSettings": {
+        "channel": {
+          "title": "Rick Astley",
+          "description": "Official YouTube channel...",
+          "keywords": "rick astley never gonna give you up",
+          "unsubscribedTrailer": "dQw4w9WgXcQ"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Example flattened connector record**:
+
+```json
+{
+  "id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+  "etag": "def456...",
+  "kind": "youtube#channel",
+  "title": "Rick Astley",
+  "description": "Official YouTube channel...",
+  "custom_url": "@rickastley",
+  "published_at": "2006-09-17T06:57:33Z",
+  "country": "GB",
+  "thumbnail_url": "https://yt3.ggpht.com/.../high.jpg",
+  "default_language": null,
+  "localized_title": "Rick Astley",
+  "localized_description": "Official YouTube channel...",
+  "total_view_count": 2500000000,
+  "total_subscriber_count": 15000000,
+  "total_video_count": 150,
+  "hidden_subscriber_count": false,
+  "uploads_playlist_id": "UUuAXFkgsw1L7xaCfnd5JJOw",
+  "likes_playlist_id": null,
+  "keywords": "rick astley never gonna give you up",
+  "topic_categories": ["https://en.wikipedia.org/wiki/Pop_music", "https://en.wikipedia.org/wiki/Music"],
+  "status": "{\"privacyStatus\":\"public\",\"isLinked\":true,\"longUploadsStatus\":\"allowed\",\"madeForKids\":false}",
+  "branding_settings": "{\"channel\":{\"title\":\"Rick Astley\",\"description\":\"Official YouTube channel...\",\"keywords\":\"rick astley never gonna give you up\"}}",
+  "localizations": null,
+  "content_owner_id": null,
+  "content_owner_time_linked": null
+}
+```
+
+
 ## **Get Object Primary Keys**
 
 There is no dedicated metadata endpoint to get primary keys. Primary keys are defined **statically** based on the resource schema.
@@ -359,6 +515,7 @@ There is no dedicated metadata endpoint to get primary keys. Primary keys are de
 |--------|-------------|------|--------|
 | `comments` | `id` | string | `topLevelComment.id` from the `commentThreads` response |
 | `videos` | `id` | string | `id` from the `videos.list` response |
+| `channels` | `id` | string | `id` from the `channels.list` response |
 
 The connector uses these as immutable primary keys for upserts/snapshots.
 
@@ -374,6 +531,7 @@ Supported ingestion types (framework-level definitions):
 |--------|----------------|-----------|
 | `comments` | `cdc` | Comments have a stable primary key `id` and an `updatedAt` field that can be used as a cursor for incremental syncs. Comments can be edited by their authors, so updates are modeled as upserts. |
 | `videos` | `snapshot` | Videos do not have a reliable `updatedAt` cursor. Video metadata (title, description, stats) can change at any time. The connector re-syncs all video metadata on each run. |
+| `channels` | `snapshot` | Channel metadata (title, description, stats) can change at any time. The connector re-syncs channel metadata on each run. |
 
 **For `comments`**:
 - **Primary key**: `id`
@@ -385,6 +543,11 @@ Supported ingestion types (framework-level definitions):
 - **Primary key**: `id`
 - **Cursor field**: None (snapshot)
 - **Deletes**: YouTube does not expose deleted videos via this API; videos that disappear from the uploads playlist will not be returned on subsequent syncs.
+
+**For `channels`**:
+- **Primary key**: `id`
+- **Cursor field**: None (snapshot)
+- **Deletes**: YouTube does not expose deleted channels via this API.
 
 
 ## **Read API for Data Retrieval**
@@ -572,6 +735,61 @@ def fetch_all_videos_for_channel(access_token, channel_id=None):
 ```
 
 
+### Read endpoint for `channels`
+
+The `channels` table uses a single API call to fetch channel metadata.
+
+- **HTTP method**: `GET`
+- **Endpoint**: `/channels`
+- **Base URL**: `https://www.googleapis.com/youtube/v3`
+
+**Key query parameters**:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `part` | string | yes | – | Comma-separated list of resource properties. Use `snippet,contentDetails,statistics,topicDetails,status,brandingSettings,localizations,contentOwnerDetails` for full data. |
+| `mine` | boolean | no | – | Set to `true` to get the authenticated user's channel. Cannot be used with `id`. |
+| `id` | string | no | – | Comma-separated channel IDs to fetch (max 50). Cannot be used with `mine`. |
+
+**Pagination**:
+- The `channels.list` endpoint supports pagination via `pageToken` and `nextPageToken`.
+- However, when fetching a single channel (via `mine=true` or a single `id`), pagination is not needed.
+- For batch fetching multiple channels, use comma-separated IDs (max 50 per request).
+
+**Example Python implementation**:
+
+```python
+def fetch_channel_metadata(access_token, channel_id=None):
+    headers = {"Authorization": f"Bearer {access_token}"}
+    base_url = "https://www.googleapis.com/youtube/v3"
+    
+    parts = "snippet,contentDetails,statistics,topicDetails,status,brandingSettings,localizations,contentOwnerDetails"
+    params = {"part": parts}
+    
+    if channel_id:
+        params["id"] = channel_id
+    else:
+        params["mine"] = "true"
+    
+    resp = requests.get(f"{base_url}/channels", params=params, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    
+    if not data.get("items"):
+        raise ValueError("No channel found")
+    
+    return data["items"][0]
+```
+
+**Quota costs**:
+- `channels.list`: ~1 unit per request
+
+**Notes**:
+- `contentOwnerDetails` is only returned for YouTube Partners with linked channels.
+- `statistics.subscriberCount` is rounded to 3 significant figures by YouTube.
+- `relatedPlaylists.likes` and `relatedPlaylists.favorites` may be empty or deprecated.
+
+
 ### Rate limits and quota
 
 **YouTube Data API Quota**:
@@ -640,7 +858,8 @@ def fetch_all_videos_for_channel(access_token, channel_id=None):
 | Official Docs | https://developers.google.com/youtube/v3/docs/comments/list | 2026-01-08 | High | `comments.list` endpoint for fetching replies. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/videos | 2026-01-08 | High | `video` resource structure and all available parts. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/videos/list | 2026-01-08 | High | `videos.list` endpoint parameters, batching up to 50 IDs. |
-| Official Docs | https://developers.google.com/youtube/v3/docs/channels | 2026-01-08 | High | `channel` resource; `contentDetails.relatedPlaylists.uploads` for discovery. |
+| Official Docs | https://developers.google.com/youtube/v3/docs/channels | 2026-01-09 | High | `channel` resource structure, all parts including snippet, statistics, brandingSettings, status, topicDetails, localizations, contentOwnerDetails. |
+| Official Docs | https://developers.google.com/youtube/v3/docs/channels/list | 2026-01-09 | High | `channels.list` endpoint parameters, `mine` vs `id` filters. |
 | Official Docs | https://developers.google.com/youtube/v3/docs/playlistItems | 2026-01-08 | High | `playlistItems.list` for enumerating video IDs from a playlist. |
 | Official Docs | https://developers.google.com/identity/protocols/oauth2/web-server | 2026-01-08 | High | OAuth 2.0 token refresh flow and endpoint. |
 | Official Docs | https://developers.google.com/youtube/v3/determine_quota_cost | 2026-01-08 | High | Quota costs and daily limits. |
@@ -656,6 +875,8 @@ def fetch_all_videos_for_channel(access_token, channel_id=None):
   - `https://developers.google.com/youtube/v3/docs/commentThreads/list`
   - `https://developers.google.com/youtube/v3/docs/comments`
   - `https://developers.google.com/youtube/v3/docs/comments/list`
+  - `https://developers.google.com/youtube/v3/docs/channels`
+  - `https://developers.google.com/youtube/v3/docs/channels/list`
 - **Google OAuth 2.0 documentation** (highest confidence)
   - `https://developers.google.com/identity/protocols/oauth2/web-server`
 - **Fivetran YouTube Analytics connector documentation** (high confidence)

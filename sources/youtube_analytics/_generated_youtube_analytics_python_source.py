@@ -210,7 +210,7 @@ def register_lakeflow_source(spark):
 
     class LakeflowConnect:
         """
-        YouTube Data API v3 connector for fetching comments and videos.
+        YouTube Data API v3 connector for fetching comments, videos, and channels.
 
         This connector uses OAuth 2.0 with refresh token authentication.
         The UC connection must provide: client_id, client_secret, refresh_token.
@@ -220,6 +220,8 @@ def register_lakeflow_source(spark):
               provided, fetches comments for that video only. Otherwise, discovers all
               videos for the channel and fetches comments for all of them.
             - videos: All video metadata for a channel. Optionally accepts channel_id.
+            - channels: Channel metadata. Optionally accepts channel_id (defaults to
+              authenticated user's channel).
         """
 
         # Google OAuth token endpoint
@@ -300,7 +302,7 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
             """
-            return ["comments", "videos"]
+            return ["channels", "comments", "videos"]
 
         def _get_comments_schema(self) -> StructType:
             """Return the flattened comments table schema."""
@@ -432,6 +434,46 @@ def register_lakeflow_source(spark):
                 ]
             )
 
+        def _get_channels_schema(self) -> StructType:
+            """Return the channels table schema with mixed flattening approach."""
+            return StructType(
+                [
+                    # Primary key and core fields
+                    StructField("id", StringType(), False),
+                    StructField("etag", StringType(), True),
+                    StructField("kind", StringType(), True),
+                    # Snippet fields (flattened)
+                    StructField("title", StringType(), True),
+                    StructField("description", StringType(), True),
+                    StructField("custom_url", StringType(), True),
+                    StructField("published_at", StringType(), True),
+                    StructField("country", StringType(), True),
+                    StructField("thumbnail_url", StringType(), True),
+                    StructField("default_language", StringType(), True),
+                    StructField("localized_title", StringType(), True),
+                    StructField("localized_description", StringType(), True),
+                    # Statistics (flattened)
+                    StructField("total_view_count", LongType(), True),
+                    StructField("total_subscriber_count", LongType(), True),
+                    StructField("total_video_count", LongType(), True),
+                    StructField("hidden_subscriber_count", BooleanType(), True),
+                    # Content details (flattened)
+                    StructField("uploads_playlist_id", StringType(), True),
+                    StructField("likes_playlist_id", StringType(), True),
+                    # Branding settings (flattened keyword only)
+                    StructField("keywords", StringType(), True),
+                    # Topic details (array)
+                    StructField("topic_categories", ArrayType(StringType()), True),
+                    # Nested objects stored as JSON strings
+                    StructField("status", StringType(), True),
+                    StructField("branding_settings", StringType(), True),
+                    StructField("localizations", StringType(), True),
+                    # Content owner details (flattened - YouTube Partners only)
+                    StructField("content_owner_id", StringType(), True),
+                    StructField("content_owner_time_linked", StringType(), True),
+                ]
+            )
+
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
         ) -> StructType:
@@ -443,6 +485,8 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "channels":
+                return self._get_channels_schema()
             if table_name == "comments":
                 return self._get_comments_schema()
             if table_name == "videos":
@@ -456,6 +500,10 @@ def register_lakeflow_source(spark):
             """
             Fetch metadata for the given table.
 
+            For `channels`:
+                - ingestion_type: snapshot
+                - primary_keys: ["id"]
+
             For `comments`:
                 - ingestion_type: cdc
                 - primary_keys: ["id"]
@@ -468,6 +516,11 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "channels":
+                return {
+                    "primary_keys": ["id"],
+                    "ingestion_type": "snapshot",
+                }
             if table_name == "comments":
                 return {
                     "primary_keys": ["id"],
@@ -511,10 +564,19 @@ def register_lakeflow_source(spark):
             Optional table_options for `videos`:
                 - channel_id: The channel ID to fetch videos from. Defaults to
                   authenticated user's channel if not provided.
+
+            For the `channels` table:
+                - Fetches channel metadata
+
+            Optional table_options for `channels`:
+                - channel_id: The channel ID to fetch. Defaults to authenticated
+                  user's channel if not provided.
             """
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "channels":
+                return self._read_channels(start_offset, table_options)
             if table_name == "comments":
                 return self._read_comments(start_offset, table_options)
             if table_name == "videos":
@@ -1070,6 +1132,156 @@ def register_lakeflow_source(spark):
                 "live_streaming_details_active_chat_id": live_streaming.get(
                     "activeLiveChatId"
                 ),
+            }
+
+        # -------------------------------------------------------------------------
+        # Channels table implementation
+        # -------------------------------------------------------------------------
+
+        def _read_channels(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the `channels` table.
+
+            Fetches channel metadata for the authenticated user's channel or a
+            specified channel ID.
+            """
+            channel_id = table_options.get("channel_id") or None
+
+            # Fetch channel metadata
+            channel = self._fetch_channel_metadata(channel_id)
+
+            if not channel:
+                return iter([]), {}
+
+            # Build flattened record
+            record = self._build_channel_record(channel)
+
+            # Snapshot ingestion - no cursor needed
+            return iter([record]), {}
+
+        def _fetch_channel_metadata(self, channel_id: str | None) -> dict | None:
+            """
+            Fetch channel metadata from the YouTube API.
+
+            If channel_id is None, uses the authenticated user's channel (mine=true).
+            """
+            url = f"{self.BASE_URL}/channels"
+            parts = (
+                "snippet,contentDetails,statistics,topicDetails,"
+                "status,brandingSettings,localizations,contentOwnerDetails"
+            )
+            params: dict[str, Any] = {"part": parts}
+
+            if channel_id:
+                params["id"] = channel_id
+            else:
+                params["mine"] = "true"
+
+            response = self._session.get(
+                url, params=params, headers=self._get_headers(), timeout=30
+            )
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"YouTube API error for channels: {response.status_code} {response.text}"
+                )
+
+            data = response.json()
+            items = data.get("items", [])
+
+            if not items:
+                if channel_id:
+                    raise ValueError(f"Channel not found: {channel_id}")
+                raise ValueError(
+                    "No channel found for authenticated user. "
+                    "Ensure the OAuth token has access to a YouTube channel."
+                )
+
+            return items[0]
+
+        def _build_channel_record(self, channel: dict) -> dict[str, Any]:
+            """Build a channel record from API response data with mixed flattening."""
+            snippet = channel.get("snippet", {})
+            content_details = channel.get("contentDetails", {})
+            statistics = channel.get("statistics", {})
+            topic_details = channel.get("topicDetails", {})
+            status = channel.get("status", {})
+            branding_settings = channel.get("brandingSettings", {})
+            localizations = channel.get("localizations")
+            content_owner_details = channel.get("contentOwnerDetails", {})
+
+            # Extract localized fields
+            localized = snippet.get("localized", {})
+
+            # Extract thumbnail URL (prefer high > medium > default)
+            thumbnails = snippet.get("thumbnails", {})
+            thumbnail_url = None
+            for quality in ["high", "medium", "default"]:
+                if quality in thumbnails and thumbnails[quality].get("url"):
+                    thumbnail_url = thumbnails[quality]["url"]
+                    break
+
+            # Extract related playlists
+            related_playlists = content_details.get("relatedPlaylists", {})
+
+            # Extract keywords from branding settings
+            branding_channel = branding_settings.get("channel", {})
+            keywords = branding_channel.get("keywords")
+
+            # Helper to safely parse integer stats (YouTube returns them as strings)
+            def safe_long(value: Any) -> int | None:
+                if value is None:
+                    return None
+                try:
+                    return int(value)
+                except (ValueError, TypeError):
+                    return None
+
+            # Helper to serialize objects to JSON strings
+            def to_json_string(obj: Any) -> str | None:
+                if obj is None or obj == {}:
+                    return None
+                try:
+                    return json.dumps(obj)
+                except (TypeError, ValueError):
+                    return None
+
+            return {
+                # Core fields
+                "id": channel.get("id"),
+                "etag": channel.get("etag"),
+                "kind": channel.get("kind"),
+                # Snippet fields (flattened)
+                "title": snippet.get("title"),
+                "description": snippet.get("description"),
+                "custom_url": snippet.get("customUrl"),
+                "published_at": snippet.get("publishedAt"),
+                "country": snippet.get("country"),
+                "thumbnail_url": thumbnail_url,
+                "default_language": snippet.get("defaultLanguage"),
+                "localized_title": localized.get("title"),
+                "localized_description": localized.get("description"),
+                # Statistics (flattened, converted to integers)
+                "total_view_count": safe_long(statistics.get("viewCount")),
+                "total_subscriber_count": safe_long(statistics.get("subscriberCount")),
+                "total_video_count": safe_long(statistics.get("videoCount")),
+                "hidden_subscriber_count": statistics.get("hiddenSubscriberCount"),
+                # Content details (flattened)
+                "uploads_playlist_id": related_playlists.get("uploads"),
+                "likes_playlist_id": related_playlists.get("likes") or None,
+                # Branding settings (keyword only)
+                "keywords": keywords,
+                # Topic details (array)
+                "topic_categories": topic_details.get("topicCategories"),
+                # Nested objects as JSON strings
+                "status": to_json_string(status),
+                "branding_settings": to_json_string(branding_settings),
+                "localizations": to_json_string(localizations),
+                # Content owner details (flattened - YouTube Partners only)
+                "content_owner_id": content_owner_details.get("contentOwner"),
+                "content_owner_time_linked": content_owner_details.get("timeLinked"),
             }
 
 
