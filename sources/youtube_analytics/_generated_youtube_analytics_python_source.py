@@ -330,8 +330,8 @@ def register_lakeflow_source(spark):
                     StructField("viewer_rating", StringType(), True),
                     StructField("like_count", LongType(), True),
                     StructField("moderation_status", StringType(), True),
-                    StructField("published_at", StringType(), True),
-                    StructField("updated_at", StringType(), True),
+                    StructField("published_at", TimestampType(), True),
+                    StructField("updated_at", TimestampType(), True),
                 ]
             )
 
@@ -344,7 +344,7 @@ def register_lakeflow_source(spark):
                     StructField("etag", StringType(), True),
                     StructField("kind", StringType(), True),
                     # Snippet fields
-                    StructField("published_at", StringType(), True),
+                    StructField("published_at", TimestampType(), True),
                     StructField("channel_id", StringType(), True),
                     StructField("title", StringType(), True),
                     StructField("description", StringType(), True),
@@ -382,7 +382,7 @@ def register_lakeflow_source(spark):
                     StructField("status_failure_reason", StringType(), True),
                     StructField("status_rejection_reason", StringType(), True),
                     StructField("status_privacy_status", StringType(), True),
-                    StructField("status_publish_at", StringType(), True),
+                    StructField("status_publish_at", TimestampType(), True),
                     StructField("status_license", StringType(), True),
                     StructField("status_embeddable", BooleanType(), True),
                     StructField("status_public_stats_viewable", BooleanType(), True),
@@ -405,7 +405,7 @@ def register_lakeflow_source(spark):
                         "topic_details_topic_categories", ArrayType(StringType()), True
                     ),
                     # Recording details
-                    StructField("recording_details_recording_date", StringType(), True),
+                    StructField("recording_details_recording_date", TimestampType(), True),
                     # Paid product placement
                     StructField(
                         "paid_product_placement_details_has_paid_product_placement",
@@ -414,16 +414,16 @@ def register_lakeflow_source(spark):
                     ),
                     # Live streaming details
                     StructField(
-                        "live_streaming_details_actual_start_time", StringType(), True
+                        "live_streaming_details_actual_start_time", TimestampType(), True
                     ),
                     StructField(
-                        "live_streaming_details_actual_end_time", StringType(), True
+                        "live_streaming_details_actual_end_time", TimestampType(), True
                     ),
                     StructField(
-                        "live_streaming_details_scheduled_start_time", StringType(), True
+                        "live_streaming_details_scheduled_start_time", TimestampType(), True
                     ),
                     StructField(
-                        "live_streaming_details_scheduled_end_time", StringType(), True
+                        "live_streaming_details_scheduled_end_time", TimestampType(), True
                     ),
                     StructField(
                         "live_streaming_details_concurrent_viewers", LongType(), True
@@ -446,7 +446,7 @@ def register_lakeflow_source(spark):
                     StructField("title", StringType(), True),
                     StructField("description", StringType(), True),
                     StructField("custom_url", StringType(), True),
-                    StructField("published_at", StringType(), True),
+                    StructField("published_at", TimestampType(), True),
                     StructField("country", StringType(), True),
                     StructField("thumbnail_url", StringType(), True),
                     StructField("default_language", StringType(), True),
@@ -470,7 +470,7 @@ def register_lakeflow_source(spark):
                     StructField("localizations", StringType(), True),
                     # Content owner details (flattened - YouTube Partners only)
                     StructField("content_owner_id", StringType(), True),
-                    StructField("content_owner_time_linked", StringType(), True),
+                    StructField("content_owner_time_linked", TimestampType(), True),
                 ]
             )
 

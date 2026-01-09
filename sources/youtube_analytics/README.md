@@ -131,8 +131,8 @@ The `comments` table contains a flattened schema combining fields from both `com
 | `viewer_rating`            | string  | comment           | Viewer's rating (`like`, `dislike`, `none`)                    |
 | `like_count`               | long    | comment           | Number of likes on this comment                                |
 | `moderation_status`        | string  | comment           | Moderation status (if applicable)                              |
-| `published_at`             | string  | comment           | ISO 8601 timestamp when comment was published                  |
-| `updated_at`               | string  | comment           | ISO 8601 timestamp when comment was last updated (cursor)      |
+| `published_at`             | timestamp | comment         | Timestamp when comment was published                           |
+| `updated_at`               | timestamp | comment         | Timestamp when comment was last updated (cursor)               |
 
 ### `videos` Schema Details
 
@@ -143,7 +143,7 @@ The `videos` table contains a flattened schema with metadata from all video reso
 | `id`                       | string         | Unique video identifier (primary key)                          |
 | `etag`                     | string         | ETag for caching                                               |
 | `kind`                     | string         | Resource kind (`youtube#video`)                                |
-| `published_at`             | string         | ISO 8601 timestamp when video was published                    |
+| `published_at`             | timestamp      | Timestamp when video was published                             |
 | `channel_id`               | string         | ID of the channel that uploaded the video                      |
 | `title`                    | string         | Video title                                                    |
 | `description`              | string         | Video description                                              |
@@ -174,7 +174,7 @@ The `channels` table contains a mixed schema with some fields flattened and some
 | `title`                    | string         | Channel title                                                  |
 | `description`              | string         | Channel description                                            |
 | `custom_url`               | string         | Channel's custom URL (handle)                                  |
-| `published_at`             | string         | ISO 8601 timestamp when channel was created                    |
+| `published_at`             | timestamp      | Timestamp when channel was created                             |
 | `country`                  | string         | Country associated with the channel                            |
 | `thumbnail_url`            | string         | URL of channel thumbnail (high quality)                        |
 | `default_language`         | string         | Default metadata language                                      |
@@ -192,7 +192,7 @@ The `channels` table contains a mixed schema with some fields flattened and some
 | `branding_settings`        | string (JSON)  | Channel branding settings as JSON                              |
 | `localizations`            | string (JSON)  | All localized metadata as JSON                                 |
 | `content_owner_id`         | string         | Content owner ID (YouTube Partners only)                       |
-| `content_owner_time_linked`| string         | When channel was linked to content owner                       |
+| `content_owner_time_linked`| timestamp      | When channel was linked to content owner                       |
 
 ## Data Type Mapping
 
@@ -203,7 +203,7 @@ YouTube API JSON fields are mapped to Spark types as follows:
 | string               | `id`, `channelId`, `textDisplay`            | `StringType`        | Standard string mapping                    |
 | boolean              | `canRate`, `canReply`, `isPublic`           | `BooleanType`       | Standard boolean mapping                   |
 | unsigned integer     | `likeCount`, `viewCount`                    | `LongType`          | All integers use `LongType` to avoid overflow |
-| ISO 8601 datetime    | `publishedAt`, `updatedAt`                  | `StringType`        | Stored as UTC strings; can be cast downstream |
+| ISO 8601 datetime    | `publishedAt`, `updatedAt`                  | `TimestampType`     | Automatically parsed from ISO 8601 UTC strings |
 | array of strings     | `tags`, `topicCategories`                   | `ArrayType(StringType)` | Arrays preserved as nested collections |
 | nested object        | `status`, `brandingSettings`                | `StringType` (JSON) | Complex objects serialized as JSON strings |
 
