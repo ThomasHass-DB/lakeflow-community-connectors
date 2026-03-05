@@ -48,10 +48,30 @@ class DynamicsBusinessCentralLakeflowConnect(LakeflowConnect):
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
 
-        self._init_ts = datetime.now(timezone.utc).isoformat()
-        self._lookback_applied = False
+        self._init_ts = self._to_utc_z(datetime.now(timezone.utc))
+        self._lookback_applied_tables: set[str] = set()
 
         self._schema_cache: dict[str, StructType] = {}
+
+    # ── DateTime helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _to_utc_z(dt: datetime) -> str:
+        """Format a datetime as ISO 8601 with Z suffix for BC OData compatibility."""
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    @staticmethod
+    def _parse_dt(value: str) -> datetime:
+        """Parse an ISO 8601 string, normalising both Z and +00:00 suffixes."""
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+
+    def _dt_gte(self, a: str, b: str) -> bool:
+        """Semantically compare two ISO 8601 strings (a >= b)."""
+        return self._parse_dt(a) >= self._parse_dt(b)
 
     # ── Authentication ────────────────────────────────────────────────────
 
@@ -324,7 +344,7 @@ class DynamicsBusinessCentralLakeflowConnect(LakeflowConnect):
             )
 
         since = start_offset.get("delete_cursor") if start_offset else None
-        if since and since >= self._init_ts:
+        if since and self._dt_gte(since, self._init_ts):
             return iter([]), start_offset
 
         max_records = int(table_options.get("max_records_per_batch", "200"))
@@ -393,24 +413,24 @@ class DynamicsBusinessCentralLakeflowConnect(LakeflowConnect):
     ) -> tuple[Iterator[dict], dict]:
         """CDC read for cdc and cdc_with_deletes tables. Client-side truncation safe."""
         since = start_offset.get("cursor") if start_offset else None
-        if since and since >= self._init_ts:
+        if since and self._dt_gte(since, self._init_ts):
             return iter([]), start_offset
 
         max_records = int(table_options.get("max_records_per_batch", "200"))
         window_seconds = int(table_options.get("window_seconds", "3600"))
 
         effective_since = since
-        if effective_since and not self._lookback_applied:
-            dt = datetime.fromisoformat(effective_since)
-            dt = dt - timedelta(seconds=LOOKBACK_SECONDS)
-            effective_since = dt.isoformat()
-            self._lookback_applied = True
+        if effective_since and table_name not in self._lookback_applied_tables:
+            dt = self._parse_dt(effective_since) - timedelta(seconds=LOOKBACK_SECONDS)
+            effective_since = self._to_utc_z(dt)
+            self._lookback_applied_tables.add(table_name)
 
         if effective_since:
-            window_end_dt = datetime.fromisoformat(effective_since) + timedelta(
+            window_end_dt = self._parse_dt(effective_since) + timedelta(
                 seconds=window_seconds
             )
-            window_end = min(window_end_dt.isoformat(), self._init_ts)
+            window_end_str = self._to_utc_z(window_end_dt)
+            window_end = window_end_str if self._dt_gte(self._init_ts, window_end_str) else self._init_ts
         else:
             window_end = self._init_ts
 
@@ -457,24 +477,24 @@ class DynamicsBusinessCentralLakeflowConnect(LakeflowConnect):
     ) -> tuple[Iterator[dict], dict]:
         """Append read. No client-side truncation — must process full pages."""
         since = start_offset.get("cursor") if start_offset else None
-        if since and since >= self._init_ts:
+        if since and self._dt_gte(since, self._init_ts):
             return iter([]), start_offset
 
         max_records = int(table_options.get("max_records_per_batch", "200"))
         window_seconds = int(table_options.get("window_seconds", "3600"))
 
         effective_since = since
-        if effective_since and not self._lookback_applied:
-            dt = datetime.fromisoformat(effective_since)
-            dt = dt - timedelta(seconds=LOOKBACK_SECONDS)
-            effective_since = dt.isoformat()
-            self._lookback_applied = True
+        if effective_since and table_name not in self._lookback_applied_tables:
+            dt = self._parse_dt(effective_since) - timedelta(seconds=LOOKBACK_SECONDS)
+            effective_since = self._to_utc_z(dt)
+            self._lookback_applied_tables.add(table_name)
 
         if effective_since:
-            window_end_dt = datetime.fromisoformat(effective_since) + timedelta(
+            window_end_dt = self._parse_dt(effective_since) + timedelta(
                 seconds=window_seconds
             )
-            window_end = min(window_end_dt.isoformat(), self._init_ts)
+            window_end_str = self._to_utc_z(window_end_dt)
+            window_end = window_end_str if self._dt_gte(self._init_ts, window_end_str) else self._init_ts
         else:
             window_end = self._init_ts
 
