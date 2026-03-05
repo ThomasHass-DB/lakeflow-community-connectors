@@ -1,0 +1,57 @@
+# dynamics_business_central Community Connector Spec
+# This file defines the specification for the connector including
+# connection parameters and allowlist options.
+
+# ============================================================================
+# Connection Parameters
+# These are provided when creating the Unity Catalog connection.
+# Authentication uses OAuth 2.0 Client Credentials Flow via an Azure AD
+# app registration with the Business Central API scope.
+# ============================================================================
+display_name: Microsoft Dynamics 365 Business Central
+connection:
+  parameters:
+    - name: tenant_id
+      type: string
+      required: true
+      description: >
+        Azure AD tenant ID (GUID format). Found on the app registration
+        Overview page in Azure Portal, or in your Business Central URL
+        (e.g., https://businesscentral.dynamics.com/{tenant_id}/).
+
+    - name: client_id
+      type: string
+      required: true
+      description: >
+        Application (client) ID (GUID format). Found on the app registration
+        Overview page in Azure Portal. The app must have the
+        'https://api.businesscentral.dynamics.com/.default' API permission.
+
+    - name: client_secret
+      type: string
+      required: true
+      secret: true
+      description: >
+        Client secret value from the app registration Certificates & secrets
+        page. Used for OAuth 2.0 Client Credentials Flow authentication.
+
+    - name: environment
+      type: string
+      required: true
+      description: >
+        Business Central environment name (e.g., 'Production' or 'Sandbox').
+
+    - name: company_id
+      type: string
+      required: true
+      description: >
+        Business Central company ID (GUID format). Required for all
+        company-scoped API calls. Can be found via the rawCompanies endpoint
+        or in the Business Central web client URL.
+
+# ============================================================================
+# External Options Allowlist
+# These table-specific options must be included in the externalOptionsAllowList
+# parameter of the UC connection to allow them to be passed through.
+# ============================================================================
+external_options_allowlist: "max_records_per_batch,window_seconds"
