@@ -16,7 +16,7 @@ Follow these steps in order. Each step depends on the previous one.
 
 The connector reads data from Business Central through custom OData API pages exposed by an AL extension. This extension must be deployed before the connector can access any data.
 
-The AL extension (`initialSetup_databricks.al`) provides:
+The AL extension ([`initialSetup_databricks.al`](initialSetup_databricks.al), included in this directory) provides:
 - **51 custom API pages** that expose Business Central tables via OData (customers, vendors, items, GL entries, etc.).
 - **Delete tracking infrastructure** — a log table, an event handler codeunit, and a tracker registration table that capture record deletions for incremental sync.
 - **A permission set** (`CONNECTOR_SETUP`) that grants the necessary table-level permissions.
@@ -247,7 +247,7 @@ These objects contain posted (immutable) records that are never modified after c
 
 ## How Delete Tracking Works
 
-Unlike webhook-based approaches (e.g., Fivetran's delete subscription model which POSTs to an external URL on each delete), this connector uses a **pull-based** delete tracking mechanism:
+Unlike webhook-based approaches that POST to an external URL on each delete, this connector uses a **pull-based** delete tracking mechanism:
 
 1. **Delete Tracker table** — Stores which BC tables are tracked for deletes. You register a tracker entry per table per company.
 2. **Deleted Record table** — When a tracked record is deleted, the AL extension's `DeleteEventHandler` codeunit intercepts the `OnDatabaseDelete` event and writes a tombstone entry containing the deleted record's `systemId`, the source table ID, and a timestamp.
